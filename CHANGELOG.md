@@ -2,6 +2,11 @@
 
 All notable changes to EndlessDB are documented in this file.
 
+## 0.5.1 - 2026-05-20
+
+### Changed
+- Replaced the public README roadmap section with a current project status note and a short future-improvements paragraph.
+
 ## 0.5.0 - 2026-05-20
 
 ### Changed

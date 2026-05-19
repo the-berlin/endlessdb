@@ -261,13 +261,11 @@ python -m pip install -e .
 python samples\01_quickstart.py
 ```
 
-## Roadmap
+## Project Status
 
-The next development stage continues to harden EndlessDB as a small developer tool:
+EndlessDB 0.5.x is focused on making the dynamic MongoDB facade safer and clearer while keeping it small. The current API includes strict mode, dictionary-returning serialization, query helpers, explicit patch/replace semantics, field unset/delete helpers, runnable samples, CI, Ruff checks, and coverage reporting.
 
-- formatter and type checking once the dynamic public API has settled further;
-- higher coverage for negative paths and pure helpers;
-- continued typing work without hiding the dynamic API.
+Future improvements are intentionally narrow: formatter/type-checking workflow, more negative-path coverage, and better public type hints where they help without hiding the dynamic API.
 
 ## Development
 
