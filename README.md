@@ -174,6 +174,8 @@ docker compose -f samples/docker-compose.yml up -d
 
 ## Development Setup
 
+EndlessDB currently targets Python 3.13+.
+
 Create or refresh the local virtual environment from the repository root:
 
 ```powershell
@@ -195,6 +197,12 @@ Run the tests:
 ```
 
 The test suite contains focused pytest tests for configuration overrides, Mongo-backed writes, nested paths, document references, YAML collections, serialization, protected mode, and debugger-friendly representations. See `.github/project-plan.md` for the active backlog.
+
+To prepare a release interactively, use the release assistant. It asks before each stage, can increment `pyproject.toml` by major/minor/patch/dev/rc/custom version, checks that the selected version is not already published, builds the package, validates it with Twine, and then asks whether to upload to TestPyPI, public PyPI, both, or neither:
+
+```powershell
+.\scripts\release.ps1
+```
 
 ## Release Notes
 

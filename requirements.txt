@@ -1,5 +1,5 @@
 # mongo
-pymongo>=4.7.2
+pymongo>=4.17.0
 # common
-pyyaml>=6.0.1
+pyyaml>=6.0.3
 

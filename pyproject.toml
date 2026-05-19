@@ -1,0 +1,34 @@
+[project]
+name = "endlessdb"
+version = "0.4.15"
+requires-python = ">=3.13"
+description = "Endless Database with pyyaml and pymongo"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE.txt"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+
+authors = [
+  { name="Andrew Berlin", email="a.berlin@33solutions.company" }
+]
+
+maintainers = [
+  { name="Andrew Berlin", email="a.berlin@33solutions.company" }
+]
+
+dependencies = [
+  'pymongo >= 4.17.0',
+  'pyyaml >= 6.0.3'
+]
+
+[project.urls]
+repository = "https://github.com"
+homepage = "https://github.com/33solutions/endlessdb"
+issues = "https://github.com/33solutions/endlessdb/issues"
+changelog = "https://github.com/33solutions/endlessdb/blob/master/CHANGELOG.md"
