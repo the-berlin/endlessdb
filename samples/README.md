@@ -18,5 +18,9 @@ Available samples:
 - `07_strict_mode.py` shows typo-safe strict mode with `PropertyNotFoundError` for missing documents and fields.
 - `08_query_helpers.py` shows `find()`, `count()`, `exists()`, `first()`, sorting, limiting, and raw PyMongo access.
 - `09_updates_and_deletes.py` shows patch-compatible assignment, explicit `patch()`, `replace()`, `unset()`, nested delete, and root document delete.
+- `storage/` contains a small Mongo-backed task storage CLI app built on an EndlessDB service class.
+- `notebook/` contains a Jupyter notebook app for interactive EndlessDB exploration.
 
 Each Mongo-backed sample creates temporary collections with unique names and drops them before exiting.
+
+For a fuller API walkthrough, see `docs/usage.md` from the repository root.

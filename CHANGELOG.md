@@ -2,6 +2,16 @@
 
 All notable changes to EndlessDB are documented in this file.
 
+## Unreleased
+
+### Changed
+- Added Ruff format checks to CI and documented the formatter workflow.
+- Applied the Ruff formatter to the existing Python source, tests, and samples.
+
+### Added
+- Added `docs/usage.md` with practical API guidance for configuration, strict mode, queries, updates, deletes, references, serialization, YAML defaults, representations, and 0.4.x migration notes.
+- Expanded `samples/storage` into a small Mongo-backed task storage CLI app and added a notebook app under `samples/notebook`.
+
 ## 0.5.1 - 2026-05-20
 
 ### Changed

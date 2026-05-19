@@ -1,1 +1,7 @@
-debug: True
+storage:
+  debug: true
+  collection: sample_storage_items
+  owner: Andrew Berlin
+  default_tags:
+    - sample
+    - endlessdb

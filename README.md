@@ -251,7 +251,8 @@ The [samples](samples) directory contains runnable examples for the main workflo
 - debugger-friendly representations;
 - strict mode;
 - query helpers;
-- patch, replace, unset, and delete behavior.
+- patch, replace, unset, and delete behavior;
+- small storage CLI and notebook app examples.
 
 Run a sample from the repository root:
 
@@ -260,6 +261,8 @@ docker compose -f samples/docker-compose.yml up -d
 python -m pip install -e .
 python samples\01_quickstart.py
 ```
+
+For a fuller walkthrough of the public API, see [docs/usage.md](docs/usage.md).
 
 ## Project Status
 
@@ -293,9 +296,16 @@ Run lint checks:
 
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check src tests samples
+.\.venv\Scripts\python.exe -m ruff format --check src tests samples
 ```
 
 Pytest writes a terminal coverage summary and `coverage.xml` through `pytest-cov`; the current baseline gate is 70%.
+
+Format Python files with Ruff when needed:
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff format src tests samples
+```
 
 Build the package locally:
 

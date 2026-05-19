@@ -74,6 +74,9 @@ jobs:
       - name: Lint
         run: python -m ruff check src tests samples
 
+      - name: Format check
+        run: python -m ruff format --check src tests samples
+
       - name: Run tests
         run: python -m pytest tests -q
 

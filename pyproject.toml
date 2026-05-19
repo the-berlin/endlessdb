@@ -42,6 +42,7 @@ src = ["src", "tests", "samples"]
 extend-exclude = [
   "build",
   "dist",
+  "*.ipynb",
   "samples/_db",
   "tests/_db",
   "tests/export",
@@ -52,6 +53,9 @@ select = ["E9", "F", "I"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["endlessdb"]
+
+[tool.ruff.format]
+line-ending = "lf"
 
 [tool.coverage.run]
 branch = true

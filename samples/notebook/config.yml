@@ -1,1 +1,5 @@
-debug: True
+notebook:
+  debug: true
+  collection: sample_notebook_entries
+  owner: Andrew Berlin
+  topic: EndlessDB notebook workflow
