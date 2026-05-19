@@ -227,8 +227,8 @@ def test_nested_attribute_and_item_paths(collection):
     assert document["ai.openai.api.base"] == "https://openai.example"
     assert document["ai.openai.api.timeout"] == 30
 
-    collection[157166437] = {"first_name": "Andrei"}
-    assert collection[157166437].first_name == "Andrei"
+    collection[157166437] = {"first_name": "Andrew"}
+    assert collection[157166437].first_name == "Andrew"
     collection["157166437.first_name"] = "Andrew"
     assert collection[157166437].first_name == "Andrew"
 
