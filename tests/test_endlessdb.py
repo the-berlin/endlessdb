@@ -17,6 +17,21 @@ from src.endlessdb import (
 )
 
 
+TEST_COVERAGE_SUMMARY = [
+    "EndlessConfiguration.apply and inherited overrides",
+    "EndlessDatabase logic access, URL masking, and debug fluent return",
+    "EndlessCollection document creation, write, reload, delete, and equality",
+    "EndlessDocument attribute access, item access, nested dot paths, and integer ids",
+    "Virtual descendants with create=True and rewrite=True",
+    "Document references and ref_to_id serialization",
+    "CollectionLogicContainer.find and find_one",
+    "JSON, YAML, base64, bytes, date, and datetime serialization",
+    "Read-only YAML collections loaded through from_yml",
+    "Protected mode, invalid value validation, root read-only behavior, and comparison errors",
+    "Debugger-friendly __repr__ and __str__ output",
+]
+
+
 class TestConfiguration(EndlessConfiguration):
     __test__ = False
 
@@ -85,6 +100,7 @@ def collection(edb, collection_name):
 
 
 def test_database_and_configuration_logic(edb):
+    # Checks configuration overrides, database logic access, URL masking, and debug fluent return.
     edbl = edb()
 
     assert isinstance(str(edb), str)
@@ -104,6 +120,7 @@ def test_database_and_configuration_logic(edb):
 
 
 def test_collection_document_write_reload_and_delete(collection):
+    # Checks Mongo-backed collection writes, document reload, delete, and parent/path logic.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"property1": 0}
 
@@ -140,6 +157,7 @@ def test_collection_document_write_reload_and_delete(collection):
 
 
 def test_nested_attribute_and_item_paths(collection):
+    # Checks attribute access, item access, nested dot paths, and integer document ids.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"profile": {"name": "Andrew"}}
     document = collection[doc_id]
@@ -150,7 +168,10 @@ def test_nested_attribute_and_item_paths(collection):
     assert document.ai.openai.api.base == "https://openai.com"
 
     document["ai.openai.api.base"] = "https://openai.example"
+    document["ai.openai.api.timeout"] = 30
+    document().reload()
     assert document["ai.openai.api.base"] == "https://openai.example"
+    assert document["ai.openai.api.timeout"] == 30
 
     collection[157166437] = {"first_name": "Andrei"}
     assert collection[157166437].first_name == "Andrei"
@@ -159,6 +180,7 @@ def test_nested_attribute_and_item_paths(collection):
 
 
 def test_create_and_rewrite_virtual_descendants(collection):
+    # Checks virtual document defaults with create=True and replacement with rewrite=True.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"seed": True}
     document = collection[doc_id]
@@ -177,6 +199,7 @@ def test_create_and_rewrite_virtual_descendants(collection):
 
 
 def test_document_references(collection, edb):
+    # Checks assigning EndlessDocument references and serializing them as target ids.
     employee_collection = collection
     department_collection_name = f"test_department_{uuid.uuid4().hex}"
     department_collection = edb[department_collection_name]
@@ -202,6 +225,7 @@ def test_document_references(collection, edb):
 
 
 def test_find_and_find_one(collection):
+    # Checks find and find_one wrappers around PyMongo collection queries.
     marker = uuid.uuid4().hex
     first_id = f"doc_{uuid.uuid4().hex}"
     second_id = f"doc_{uuid.uuid4().hex}"
@@ -218,6 +242,7 @@ def test_find_and_find_one(collection):
 
 
 def test_serialization_json_yaml_and_base64(collection):
+    # Checks dict, JSON, base64 JSON, YAML, bytes, date, and datetime serialization.
     doc_id = f"doc_{uuid.uuid4().hex}"
     now = datetime.now()
     now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
@@ -248,6 +273,7 @@ def test_serialization_json_yaml_and_base64(collection):
 
 
 def test_yml_collection_is_read_only_and_reloadable(tmp_path):
+    # Checks read-only YAML collections and reload behavior when YAML keys change.
     config_path = tmp_path / "defaults.yml"
     config_path.write_text(
         "service:\n  debug: true\n  endpoint: https://example.test\n",
@@ -272,6 +298,7 @@ def test_yml_collection_is_read_only_and_reloadable(tmp_path):
 
 
 def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
+    # Checks protected documents, invalid values, root read-only behavior, and comparison errors.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"name": "readonly"}
     document = collection[doc_id]
@@ -296,6 +323,7 @@ def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
 
 
 def test_debugger_friendly_representations(collection):
+    # Checks debugger-friendly __repr__ and __str__ markers for dynamic wrappers.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"name": "debug"}
     document = collection[doc_id]

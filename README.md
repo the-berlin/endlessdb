@@ -154,6 +154,24 @@ The visual representation is compact but information dense:
 
 That means expressions such as `edb`, `edb.Employee`, `edb.Employee["john"]`, and `edb.Employee["john"].Profile` reveal their identity, path, size, and state directly in the debugger without extra logging.
 
+## Samples
+
+The `samples` folder contains runnable examples for the main EndlessDB workflows:
+
+- quickstart collection/document writes;
+- nested dot-path updates;
+- document references;
+- JSON, base64 JSON, and YAML serialization;
+- YAML defaults loading;
+- debugger-friendly representations.
+
+Start MongoDB and run any sample from the repository root:
+
+```powershell
+docker compose -f samples/docker-compose.yml up -d
+.\.venv\Scripts\python.exe samples\01_quickstart.py
+```
+
 ## Development Setup
 
 Create or refresh the local virtual environment from the repository root:

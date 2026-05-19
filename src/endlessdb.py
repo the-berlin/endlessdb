@@ -680,17 +680,12 @@ class CollectionLogicContainer():
             if path_length == 1:
                 _data = { "$set": value }
             else:
-                _data = { "$set": {} }             
-                _currentPath = _data["$set"]                                                
-                for i in range(1, path_length):
-                    _currentPath[_path[i]] = {}
-                    if i < path_length - 1:
-                        _currentPath = _currentPath[_path[i]]                    
                 if isinstance(value, EndlessDocument):
                     _value = value()
-                    _currentPath[_path[i]] = _value.to_ref()
+                    _value = _value.to_ref()
                 else:
-                    _currentPath[_path[i]] = value
+                    _value = value
+                _data = { "$set": { ".".join(_path[1:]): _value } }
             
             try:
                 _id = int(_path[0])
