@@ -7,7 +7,7 @@ import pymongo
 import pytest
 import yaml
 
-from src.endlessdb import (
+from endlessdb import (
     CollectionLogicContainer,
     EndlessCollection,
     EndlessConfiguration,
@@ -313,7 +313,7 @@ def test_typed_descendant_strict_mode(collection):
 
 def test_unused_w_helper_is_not_public():
     # Checks that the old experimental w helper is no longer exported.
-    import src.endlessdb as endlessdb_module
+    import endlessdb as endlessdb_module
 
     assert "w" not in endlessdb_module.__all__
     assert not hasattr(endlessdb_module, "w")

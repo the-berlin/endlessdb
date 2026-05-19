@@ -1,0 +1,134 @@
+name: GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, for example v0.4.17"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: root
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+            prerelease="${{ inputs.prerelease }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            prerelease="false"
+          fi
+
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+
+          expected = os.environ["RELEASE_VERSION"]
+          with open("pyproject.toml", "rb") as stream:
+              project = tomllib.load(stream)["project"]
+
+          actual = project["version"]
+          if actual != expected:
+              raise SystemExit(f"pyproject.toml version {actual!r} does not match release tag {expected!r}")
+          PY
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+
+      - name: Wait for MongoDB
+        run: |
+          python - <<'PY'
+          import time
+
+          import pymongo
+
+          last_error = None
+          for _ in range(60):
+              client = pymongo.MongoClient(
+                  "mongodb://root:root@localhost:27017/",
+                  serverSelectionTimeoutMS=1000,
+              )
+              try:
+                  client.admin.command("ping")
+                  client.close()
+                  raise SystemExit(0)
+              except Exception as exc:
+                  last_error = exc
+                  client.close()
+                  time.sleep(1)
+
+          raise SystemExit(f"MongoDB did not become ready: {last_error}")
+          PY
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distributions
+        run: python -m twine check dist/*
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          args=(--verify-tag --title "$RELEASE_TAG" --generate-notes)
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_TAG" dist/* "${args[@]}"

@@ -2,6 +2,8 @@
 
 EndlessDB is a lightweight Python wrapper around MongoDB that lets you work with databases, collections, and documents as dynamic Python objects.
 
+It is a developer tool for scripts, prototypes, fixtures, notebooks, and debugger-friendly workflows. It is not a full ODM and does not try to hide PyMongo.
+
 It keeps MongoDB as the source of truth while making common document access feel natural:
 
 ```python
@@ -23,7 +25,7 @@ employees["john"] = {"Name": "John", "Age": 25}
 employees["john"].Age = 26
 
 print(employees["john"].Name)
-print(employees["john"]().to_dict())
+print(dict(employees["john"]().to_dict()))
 ```
 
 ## Features
@@ -41,7 +43,7 @@ print(employees["john"]().to_dict())
 
 ## Installation
 
-EndlessDB requires Python 3.13 or newer and a reachable MongoDB server.
+EndlessDB requires Python 3.11 or newer and a reachable MongoDB server.
 
 Install the package from PyPI:
 
@@ -171,10 +173,10 @@ matches = list(employees().find({"Age": 31}))
 
 ## Serialization
 
-Logic containers can export data to dictionaries, JSON, or YAML:
+The current `0.4.x` API exposes serializable key/value pairs through `to_dict()`. Wrap it with `dict()` when you need a concrete dictionary. The roadmap includes making `to_dict()` return a dictionary directly.
 
 ```python
-data = employees["john"]().to_dict()
+data = dict(employees["john"]().to_dict())
 json_text = employees["john"]().to_json()
 yaml_text = employees().to_yml()
 ```
@@ -213,6 +215,20 @@ python -m pip install -e .
 python samples\01_quickstart.py
 ```
 
+## Roadmap
+
+The next development stage focuses on making the dynamic API safer and clearer while keeping EndlessDB small:
+
+- strict mode for typo-safe attribute access;
+- `to_dict()` returning real dictionaries, with a separate iterator API for lazy key/value traversal;
+- public imports in tests and samples while still testing the local source tree;
+- richer query helpers for sorting, limiting, projections, counts, existence checks, and raw PyMongo access;
+- explicit field deletion and unset operations;
+- separate patch and replace semantics for document writes;
+- Python 3.11+ compatibility after test and CI validation;
+- Ruff, formatting, type checking, coverage, and GitHub Actions CI;
+- plain default representations with optional emoji/debug-friendly output.
+
 ## Development
 
 Create a local virtual environment and install development dependencies:
@@ -239,6 +255,14 @@ Build the package locally:
 
 ```powershell
 .\.venv\Scripts\python.exe -m build
+```
+
+GitHub Actions runs tests against Python 3.11, 3.12, and 3.13 with a MongoDB service container, then builds and checks the package distributions.
+
+To create a GitHub Release, commit the version change first, then create and push a `v<version>` tag. The release workflow verifies that the tag matches `pyproject.toml`, runs tests, builds the wheel and source distribution, checks them with Twine, and attaches the artifacts to the GitHub Release:
+
+```powershell
+.\scripts\create-github-release-tag.ps1
 ```
 
 ## License

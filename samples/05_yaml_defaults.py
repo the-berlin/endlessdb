@@ -2,7 +2,7 @@ from pathlib import Path
 
 from common import ROOT
 
-from src.endlessdb import CollectionLogicContainer
+from endlessdb import CollectionLogicContainer
 
 
 config_path = ROOT / "samples" / "storage" / "config.yml"

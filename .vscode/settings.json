@@ -1,6 +1,9 @@
 {
+    "python.analysis.extraPaths": [
+        "./src"
+    ],
     "python.testing.pytestArgs": [
-        "endlessdb"
+        "tests"
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true

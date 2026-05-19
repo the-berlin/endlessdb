@@ -1,4 +1,6 @@
-.github
+.github/*
+!.github/workflows/
+!.github/workflows/**
 
 samples/_db
 tests/_db

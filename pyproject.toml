@@ -1,7 +1,7 @@
 [project]
 name = "endlessdb"
 version = "0.4.16"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 description = "Endless Database with pyyaml and pymongo"
 readme = "README.md"
 license = "Apache-2.0"
@@ -10,6 +10,8 @@ license-files = ["LICENSE.txt"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]
@@ -28,7 +30,7 @@ dependencies = [
 ]
 
 [project.urls]
-repository = "https://github.com"
+repository = "https://github.com/33solutions/endlessdb"
 homepage = "https://github.com/33solutions/endlessdb"
 issues = "https://github.com/33solutions/endlessdb/issues"
 changelog = "https://github.com/33solutions/endlessdb/blob/master/CHANGELOG.md"

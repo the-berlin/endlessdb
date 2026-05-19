@@ -6,6 +6,13 @@ All notable changes to EndlessDB are documented in this file.
 
 ### Changed
 - Reworked the README for public project usage with PyPI installation, package imports, concise feature documentation, and no internal release or planning notes.
+- Added a public roadmap and internal implementation plan for developer-tool positioning, strict mode, dictionary iteration clarity, query expansion, field deletion, patch/replace semantics, Python compatibility, quality tooling, and optional emoji representations.
+- Lowered declared Python compatibility to Python 3.11+ and switched tests/samples toward public `endlessdb` imports while still testing the local source tree.
+
+### Added
+- Added GitHub Actions CI for Python 3.11, 3.12, and 3.13 with MongoDB integration tests and package distribution checks.
+- Added a tag-driven GitHub Release workflow that builds, validates, and attaches wheel/source distributions to releases.
+- Added `scripts/create-github-release-tag.ps1` to create and push `v<version>` tags that trigger GitHub Releases.
 
 ## 0.4.16 - 2026-05-20
 
