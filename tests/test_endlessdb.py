@@ -13,7 +13,14 @@ from src.endlessdb import (
     EndlessConfiguration,
     EndlessDatabase,
     EndlessDocument,
+    InvalidValueError,
+    PropertyNotFoundError,
+    ReadOnlyError,
+    TypeExpectationError,
+    UnsupportedComparisonError,
     json_default_encoder,
+    mask_mongodb_url,
+    mongodb_database_from_url,
 )
 
 
@@ -25,8 +32,14 @@ TEST_COVERAGE_SUMMARY = [
     "Virtual descendants with create=True and rewrite=True",
     "Document references and ref_to_id serialization",
     "CollectionLogicContainer.find and find_one",
+    "Per-instance EndlessDatabase connection overrides and URL helpers",
+    "Typed EndlessDB exception classes",
+    "Typed descendant strict mode",
+    "Removed unused public w helper",
     "JSON, YAML, base64, bytes, date, and datetime serialization",
     "Read-only YAML collections loaded through from_yml",
+    "Missing and non-dict YAML negative paths",
+    "List and nested list values in Mongo writes",
     "Protected mode, invalid value validation, root read-only behavior, and comparison errors",
     "Debugger-friendly __repr__ and __str__ output",
 ]
@@ -114,9 +127,50 @@ def test_database_and_configuration_logic(edb):
     assert edbl.url_info("mongodb://user:secret@localhost:27017/db?x=1")["masked"] == (
         "mongodb://user:******@localhost:27017/db?x=1"
     )
+    assert edbl.url_info("mongodb://localhost:27017/")["masked"] == "mongodb://localhost:27017/"
+    assert mask_mongodb_url("mongodb://user:p%40ss@localhost:27017/db?x=1") == (
+        "mongodb://user:******@localhost:27017/db?x=1"
+    )
+    assert mongodb_database_from_url("mongodb://user:secret@localhost:27017/db?x=1") == "db"
+    assert mongodb_database_from_url("mongodb://localhost:27017/") is None
+    assert edbl.build_url("localhost", 27017, "root", "root", "tests-endlessdb") == (
+        "mongodb://root:root@localhost:27017/tests-endlessdb?authSource=admin&authMechanism=SCRAM-SHA-256"
+    )
+    assert edbl.build_url("localhost", 27017, "", "", "tests-endlessdb") == (
+        "mongodb://localhost:27017/tests-endlessdb"
+    )
 
     assert edb(debug=True) is edb
     assert edb().debug is True
+
+
+def test_database_constructor_connection_overrides(endlessdb_configuration, mongo_available):
+    # Checks that explicit constructor arguments override configuration per database instance.
+    edb = EndlessDatabase(
+        host="localhost",
+        port=27017,
+        user="root",
+        password="root",
+        database="tests-endlessdb-explicit",
+    )
+    try:
+        assert edb().key() == "tests-endlessdb-explicit"
+        assert edb().url_info(edb()._url["url"])["masked"] == (
+            "mongodb://root:****@localhost:27017/tests-endlessdb-explicit?authSource=admin&authMechanism=SCRAM-SHA-256"
+        )
+        edb().mongo().command("ping")
+    finally:
+        edb().mongo().client.drop_database("tests-endlessdb-explicit")
+
+    url_database = f"tests-endlessdb-url-{uuid.uuid4().hex}"
+    url_edb = EndlessDatabase(
+        url=f"mongodb://root:root@localhost:27017/{url_database}?authSource=admin&authMechanism=SCRAM-SHA-256"
+    )
+    try:
+        assert url_edb().key() == url_database
+        url_edb().mongo().command("ping")
+    finally:
+        url_edb().mongo().client.drop_database(url_database)
 
 
 def test_collection_document_write_reload_and_delete(collection):
@@ -237,8 +291,32 @@ def test_find_and_find_one(collection):
     assert set(found) == {first_id, second_id}
 
     assert collection().find_one({"order": 1}).id == first_id
-    assert list(collection().find({"marker": "missing"})) == [None]
+    assert list(collection().find({"marker": "missing"})) == []
     assert collection().find_one({"marker": "missing"}) is None
+
+
+def test_typed_descendant_strict_mode(collection):
+    # Checks typed descendant expectations with strict exception mode.
+    doc_id = f"doc_{uuid.uuid4().hex}"
+    collection[doc_id] = {"count": 1, "name": "Andrew"}
+    document = collection[doc_id]
+
+    typed_document = document(int, exception=True)
+    assert typed_document.count == 1
+
+    with pytest.raises(TypeExpectationError, match="not instance"):
+        typed_document.name
+
+    with pytest.raises(PropertyNotFoundError, match="not found"):
+        typed_document.missing
+
+
+def test_unused_w_helper_is_not_public():
+    # Checks that the old experimental w helper is no longer exported.
+    import src.endlessdb as endlessdb_module
+
+    assert "w" not in endlessdb_module.__all__
+    assert not hasattr(endlessdb_module, "w")
 
 
 def test_serialization_json_yaml_and_base64(collection):
@@ -287,7 +365,7 @@ def test_yml_collection_is_read_only_and_reloadable(tmp_path):
     assert collection().mongo() is None
     assert collection().path(True) == "yml/defaults.yml"
 
-    with pytest.raises(Exception, match="read-only"):
+    with pytest.raises(ReadOnlyError, match="read-only"):
         collection["service.debug"] = False
 
     config_path.write_text("service:\n  debug: false\n", encoding="utf-8")
@@ -295,6 +373,37 @@ def test_yml_collection_is_read_only_and_reloadable(tmp_path):
 
     assert collection.service.debug is False
     assert "endpoint" not in dict(collection.service().to_dict())
+
+
+def test_yml_collection_negative_paths(tmp_path):
+    # Checks missing YAML files and YAML documents that are not mapping objects.
+    missing_path = tmp_path / "missing.yml"
+    with pytest.raises(FileNotFoundError):
+        CollectionLogicContainer.from_yml(missing_path)
+
+    list_path = tmp_path / "list.yml"
+    list_path.write_text("- one\n- two\n", encoding="utf-8")
+    with pytest.raises(InvalidValueError, match="must be a dict"):
+        CollectionLogicContainer.from_yml(list_path)
+
+
+def test_list_values_and_nested_lists(collection):
+    # Checks list and nested list values accepted by Mongo-backed writes.
+    doc_id = f"doc_{uuid.uuid4().hex}"
+    collection[doc_id] = {
+        "tags": ["alpha", "beta"],
+        "matrix": [[1, 2], [3, 4]],
+        "items": [{"name": "one"}, {"name": "two"}],
+    }
+
+    document = collection[doc_id]
+    assert document.tags == ["alpha", "beta"]
+    assert document.matrix == [[1, 2], [3, 4]]
+    assert document.items == [{"name": "one"}, {"name": "two"}]
+
+    document.tags = ["gamma", "delta"]
+    document().reload()
+    assert document.tags == ["gamma", "delta"]
 
 
 def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
@@ -306,19 +415,19 @@ def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
     protected_document = document(protected=True)
     assert protected_document is document
 
-    with pytest.raises(Exception, match="protected and read-only"):
+    with pytest.raises(ReadOnlyError, match="protected and read-only"):
         document.name = "changed"
 
-    with pytest.raises(Exception, match="Value must be instance"):
+    with pytest.raises(InvalidValueError, match="Value must be instance"):
         collection[f"bad_{uuid.uuid4().hex}"] = {"value": object()}
 
-    with pytest.raises(Exception, match="Id is read-only"):
+    with pytest.raises(ReadOnlyError, match="Id is read-only"):
         document.id = "new-id"
 
-    with pytest.raises(Exception, match="read-only"):
+    with pytest.raises(ReadOnlyError, match="read-only"):
         edb.anything = {"value": True}
 
-    with pytest.raises(Exception, match="comparison"):
+    with pytest.raises(UnsupportedComparisonError, match="comparison"):
         document == "not-a-document"
 
 

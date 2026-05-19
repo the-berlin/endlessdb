@@ -1,6 +1,6 @@
 [project]
 name = "endlessdb"
-version = "0.4.15"
+version = "0.4.16"
 requires-python = ">=3.13"
 description = "Endless Database with pyyaml and pymongo"
 readme = "README.md"

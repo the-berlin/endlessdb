@@ -1,29 +1,92 @@
+"""Dynamic object wrapper around MongoDB databases, collections, and documents.
+
+EndlessDB intentionally exposes MongoDB data through Python attribute and item
+access. Public wrappers (`EndlessDatabase`, `EndlessCollection`, and
+`EndlessDocument`) stay small and debugger-friendly; their operational state
+lives in the matching `*LogicContainer` classes stored on each wrapper.
+"""
+
+from __future__ import annotations
+
+import base64
+import inspect
+import json
+import logging
 import os
 import re
 import uuid
+from abc import abstractmethod
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterator
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+
 import bson
-import yaml
-import json
-import base64
+from bson.objectid import ObjectId
 import pymongo
-import inspect
-import logging
 import pymongo.collection
 import pymongo.database
+import yaml
 
-from abc import abstractmethod
-from typing import Any
-from pathlib import (
-    Path
-)
-from datetime import (
-    date,
-    datetime
-)
-from bson.objectid import ObjectId
-from functools import partial
+__all__ = [
+    "CollectionLogicContainer",
+    "DatabaseLogicContainer",
+    "DocumentLogicContainer",
+    "EndlessCollection",
+    "EndlessConfiguration",
+    "EndlessDBError",
+    "EndlessDatabase",
+    "EndlessDocument",
+    "Formatter",
+    "InvalidValueError",
+    "Logger",
+    "PropertyNotFoundError",
+    "ReadOnlyError",
+    "TypeExpectationError",
+    "UnsupportedComparisonError",
+    "is_magic_method",
+    "is_valid_value",
+    "json_default_encoder",
+    "re_mask_subgroup",
+]
+
+LOGIC_KEY = "***"
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class EndlessDBError(Exception):
+    """Base class for all EndlessDB-specific errors."""
+
+
+class ReadOnlyError(EndlessDBError):
+    """Raised when a write is attempted against a read-only wrapper."""
+
+
+class InvalidValueError(EndlessDBError, TypeError):
+    """Raised when a value cannot be represented by the EndlessDB storage model."""
+
+
+class UnsupportedComparisonError(EndlessDBError, TypeError):
+    """Raised when a dynamic wrapper is compared with an unsupported object."""
+
+
+class PropertyNotFoundError(EndlessDBError, AttributeError):
+    """Raised when strict dynamic lookup cannot find a requested property."""
+
+
+class TypeExpectationError(EndlessDBError, TypeError):
+    """Raised when a value does not satisfy a typed descendant expectation."""
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
 
 class Formatter(logging.Formatter):
+    """ANSI color formatter used by the optional module logger."""
 
     default = "\x1b[39;20m\x1b[49;20m"
     
@@ -61,47 +124,77 @@ class Formatter(logging.Formatter):
         logging.CRITICAL: f"{bold_red}{_title}{bold_red}{_format}",
     }
 
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
+    def format(self, record: logging.LogRecord) -> str:
+        """Format a log record with the color assigned to its level."""
+        log_fmt = self.FORMATS.get(record.levelno, self.FORMATS[logging.INFO])
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
+
 class Logger:
+    """Tiny logger facade retained for sample/debug output compatibility."""
+
+    _ch = None
     
-    def __init__(self, name):
+    def __init__(self, name: str) -> None:
+        """Create or reuse a configured logger with EndlessDB formatting."""
         self._name = name
         self._logger = logging.getLogger(name)
         self._logger.setLevel(logging.DEBUG)
-        self._logger.addHandler(Logger._ch)
+        if Logger._ch is None:
+            Logger.init()
+        if Logger._ch not in self._logger.handlers:
+            self._logger.addHandler(Logger._ch)
         self._logger.propagate = False
-        
-    def init():
+
+    @staticmethod
+    def init() -> None:
+        """Initialize the shared stream handler used by all Logger instances."""
         Logger._ch = logging.StreamHandler()
         Logger._ch.setLevel(logging.DEBUG)
         Logger._ch.setFormatter(Formatter())
     
     def __str__(self) -> str:
+        """Return a compact logger label for debugger views."""
         return f"📝{self._name}Logger"
         
     def __repr__(self) -> str:
+        """Return the same compact label used by `str()`."""
         return self.__str__()
         
-    def debug(self, msg):
+    def debug(self, msg: Any) -> None:
+        """Write a DEBUG log message."""
         self._logger.debug(msg)
 
-    def info(self, msg):
+    def info(self, msg: Any) -> None:
+        """Write an INFO log message."""
         self._logger.info(msg)
     
-    def warning(self, msg):
+    def warning(self, msg: Any) -> None:
+        """Write a WARNING log message."""
         self._logger.warning(msg)
         
-    def error(self, msg):
+    def error(self, msg: Any) -> None:
+        """Write an ERROR log message."""
         self._logger.error(msg)
 
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 class EndlessConfiguration():
+    """Runtime configuration with inheritable override classes.
+
+    A subclass can override values and call `apply()`. The override is then
+    consulted by base configuration instances through dynamic attribute access.
+    Missing keys intentionally return `None`, matching the public dynamic API.
+    """
+
     _override = {}
     
     def __init__(self) -> None:
+        """Load base values from the environment or initialize a subclass override."""
         if type(self) == EndlessConfiguration:
             self.MONGO_HOST = os.environ.get("CORE_MONGO_HOST", "mongo")
             self.MONGO_PORT = int(os.environ.get("CORE_MONGO_PORT", 27017))
@@ -116,22 +209,27 @@ class EndlessConfiguration():
             self.override()
     
     def __str__(self) -> str:
+        """Return a compact configuration label for debugger views."""
         return f"⚙️Endlessdb configuration({self.__class__.__name__})"
     
     def __repr__(self) -> str:
+        """Return the same compact label used by `str()`."""
         return self.__str__()
     
     @classmethod
-    def apply(cls):
+    def apply(cls) -> None:
+        """Register a configuration subclass as an override for its base class."""
         if issubclass(cls, EndlessConfiguration):
             if len(cls.__bases__) > 0 and issubclass(cls.__bases__[0], EndlessConfiguration):
                 EndlessConfiguration._override[str(cls.__bases__[0])] = cls()
     
     @abstractmethod
-    def override(self):
+    def override(self) -> None:
+        """Override configuration values in subclasses."""
         pass
     
     def __getattr__(self, key: str) -> Any:
+        """Resolve overrides before falling back to local attributes."""
         c = type(self)
         cs = str(c)
         _ov = None
@@ -147,9 +245,11 @@ class EndlessConfiguration():
         return None 
         
     def __getitem__(self, key: str) -> Any:
+        """Resolve configuration values by item access."""
         return self.__getattr__(key)
          
     def __getattribute__(self, name: str) -> Any:
+        """Preserve dynamic config lookup while keeping Python internals intact."""
         if name == "__class__":
             return type(self)
         
@@ -164,16 +264,21 @@ class EndlessConfiguration():
         
         return super().__getattribute__(name)
     
-#region 📌Common
 
-def re_mask_subgroup(subgroup, mask, m):
+# ---------------------------------------------------------------------------
+# Common helpers
+# ---------------------------------------------------------------------------
+
+def re_mask_subgroup(subgroup: str, mask: str, m: re.Match[str]) -> str | None:
+    """Mask a regex subgroup while preserving the rest of the match."""
     if m.group(subgroup) not in [None, '']:
         start = m.start(subgroup)
         end = m.end(subgroup)
         length = end - start
         return m.group()[:start] + mask*length + m.group()[end:]
 
-def json_default_encoder(obj):
+def json_default_encoder(obj: Any) -> Any:
+    """JSON fallback encoder for EndlessDB values."""
     if isinstance(obj, bytes):
         return base64.b64encode(obj).decode("utf-8")
     
@@ -185,13 +290,15 @@ def json_default_encoder(obj):
     else:
         return obj.__str__()
 
-def is_magic_method(method):
+def is_magic_method(method: Any) -> bool:
+    """Return True when a key looks like a Python dunder method name."""
     if isinstance(method, int):
         return False
     
     return method.startswith("__") and method.endswith("__")
 
-def is_valid_value(value):
+def is_valid_value(value: Any) -> bool:
+    """Validate values before sending them to PyMongo/BSON."""
     valid_types = [EndlessDocument, str, int, float, bool, bytes, bytearray, datetime, uuid.UUID, type(None)]
     if type(value) in valid_types:
         return True
@@ -204,27 +311,53 @@ def is_valid_value(value):
 
     return False
 
-### Class for wrapping logic container (TO DO) 
 
-class w():    
-    def __init__(self, d) -> Any:
-        self.d = d
-        
-    def __getattr__(self, key: str) -> Any:
-        return self.d[key]
+def normalize_document_key(key: Any) -> Any:
+    """Coerce string integer keys to int while leaving other keys unchanged."""
+    try:
+        return int(key)
+    except (TypeError, ValueError):
+        return key
+
+
+def mongodb_database_from_url(url: str | None) -> str | None:
+    """Extract the database path segment from a MongoDB URL when one exists."""
+    if not url:
+        return None
+
+    path = urlsplit(url).path.strip("/")
+    if not path:
+        return None
+
+    return path.split("/", 1)[0] or None
+
+
+def mask_mongodb_url(url: str, mask: str = "*") -> str:
+    """Mask the password part of a MongoDB URL while preserving its shape."""
+    parts = urlsplit(url)
+    if not parts.password:
+        return url
+
+    username = parts.username or ""
+    password = mask * len(parts.password)
+    credentials = f"{username}:{password}"
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    port = f":{parts.port}" if parts.port else ""
+
+    return urlunsplit((parts.scheme, f"{credentials}@{host}{port}", parts.path, parts.query, parts.fragment))
+
+
+# ---------------------------------------------------------------------------
+# Logic containers
+# ---------------------------------------------------------------------------
+
+class DocumentLogicContainer():
+    """Mutable operational state for one `EndlessDocument` wrapper."""
     
-    def __setattr__(self, key: str, value: Any) -> None:
-        self.d[key] = value
-
-#endregion 📌Common
-
-#region 📌Logic
-
-class DocumentLogicContainer():   
-    
-    #region 📌Magic
-    
-    def __init__(self, _, key, obj, parent_logic, virtual):
+    def __init__(self, _: EndlessDocument, key: Any, obj: dict[str, Any] | None, parent_logic: Any, virtual: bool) -> None:
+        """Bind the wrapper to its parent and load the initial document data."""
         self.uuid = str(uuid.uuid4())
         self._ = _
         self.__ = _.__dict__
@@ -246,17 +379,16 @@ class DocumentLogicContainer():
         
         self._reload(obj) 
     
-    def __call__(self):
+    def __call__(self) -> EndlessDocument:
+        """Return the public document wrapper owned by this logic container."""
         return self._
     
-    #endregion 📌Magic
-    
-    #region 📌Methods
-    
     def __repr__(self) -> str:
+        """Return the debugger-friendly logic representation."""
         return f"🧩logic({self.repr()})"
     
-    def _reload(self, obj):
+    def _reload(self, obj: dict[str, Any] | None) -> None:
+        """Refresh wrapper attributes from MongoDB, YAML, or supplied data."""
         mongo = None
         _self = self._ 
         if obj is None:
@@ -280,11 +412,7 @@ class DocumentLogicContainer():
             
         if self._key is None:
             path = self._path.split("/")
-            try:
-                self._key = int(path[-1])
-                pass
-            except:
-                self._key = path[-1]
+            self._key = normalize_document_key(path[-1])
             
         virtual = self.virtual
                        
@@ -345,7 +473,8 @@ class DocumentLogicContainer():
             if _key not in self._keys:
                 del self.__[_key]                        
             
-    def repr(self, srepr = None) -> str:
+    def repr(self, srepr: str | None = None) -> str:
+        """Build the compact debugger representation for this document path."""
         parent = self.parent()
         repr = ""
         if self.debug:
@@ -376,7 +505,8 @@ class DocumentLogicContainer():
         else:
             return parent().repr(repr)            
     
-    def descendant(self, key, obj, virtual = False, reload = True):
+    def descendant(self, key: Any, obj: dict[str, Any] | None, virtual: bool = False, reload: bool = True) -> EndlessDocument:
+        """Return a cached child document or create one for a nested object."""
         edb = self.edb()
         if edb is not None:
             documents = self.edb()().documents()
@@ -392,13 +522,16 @@ class DocumentLogicContainer():
         
         return EndlessDocument(key, obj, self, virtual)
 
-    def len(self):
+    def len(self) -> int:
+        """Return the number of known fields in the document."""
         return len(self._keys)
     
-    def key(self):
+    def key(self) -> Any:
+        """Return the MongoDB `_id` for this document."""
         return self._key
     
-    def relative_path(self, current = None):
+    def relative_path(self, current: str | None = None) -> str:
+        """Return this document path relative to its collection."""
         if current is None:
             _path = str(self._key)
         else:    
@@ -408,27 +541,32 @@ class DocumentLogicContainer():
         
         return f"{self._parent_logic.relative_path(_path)}"
         
-    def path(self, full = False):
+    def path(self, full: bool = False) -> str:
+        """Return the full or collection-relative document path."""
         if full:
             return self._path
         else:
-            return self.relative_path();    
+            return self.relative_path()
     
-    def parent(self):
+    def parent(self) -> Any:
+        """Return the parent public wrapper."""
         return self._parent_logic()
     
-    def keys(self):
+    def keys(self) -> list[Any]:
+        """Return known field names in load order."""
         return self._keys
     
     def mongo(self) -> pymongo.collection.Collection:
+        """Return the backing PyMongo collection when the document is Mongo-backed."""
         return self.collection()().mongo()
     
-    def reload(self):
-        #if not self.virtual:
+    def reload(self) -> EndlessDocument:
+        """Reload the document from its backing source and return the wrapper."""
         self._reload(None)
         return self._  
     
-    def delete(self):
+    def delete(self) -> None:
+        """Delete the root Mongo document, or delegate nested deletion upward."""
         if isinstance(self._parent_logic, CollectionLogicContainer):
             self.mongo().delete_one({ "_id": self._key })
             documents = self._parent_logic.edb()().documents()
@@ -440,25 +578,29 @@ class DocumentLogicContainer():
         else:
             self._parent_logic.delete()
         
-    def edb(self):
+    def edb(self) -> EndlessDatabase:
+        """Return the owning database wrapper."""
         if isinstance(self._parent_logic, CollectionLogicContainer):
             return self._parent_logic.edb()
         
         return self._parent_logic._parent_logic.edb()        
         
-    def collection(self):
+    def collection(self) -> EndlessCollection:
+        """Return the owning collection wrapper."""
         if isinstance(self._parent_logic, CollectionLogicContainer):
             return self._parent_logic()
         
         return self._parent_logic.collection()
     
-    def to_ref(self):
+    def to_ref(self) -> dict[str, Any]:
+        """Return a MongoDB DBRef-compatible dictionary for this document."""
         return { 
             "$ref": self.collection()().key(), 
             "$id": self._key
         }
         
-    def to_dict(self, *args, **kwargs):
+    def to_dict(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
+        """Yield serializable key/value pairs for the document."""
         if "exclude" in kwargs:
             exclude = kwargs["exclude"]
         else:
@@ -496,7 +638,8 @@ class DocumentLogicContainer():
             else:
                 yield (_key, value)
             
-    def to_json(self, *args, **kwargs):
+    def to_json(self, *args: Any, **kwargs: Any) -> str:
+        """Serialize the document to JSON, optionally base64-encoded."""
         if "base64" in kwargs and kwargs["base64"]:
             to_base64 = kwargs.pop("base64")
         else:
@@ -514,18 +657,18 @@ class DocumentLogicContainer():
         
         return _json    
 
-    def to_yml(self):
+    def to_yml(self) -> str:
+        """Serialize the document to YAML."""
         _dict = dict(self.to_dict())
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
-    #endregion 📌Methods
     
-class CollectionLogicContainer():   
-      
-    #region 📌Magic
+class CollectionLogicContainer():
+    """Mutable operational state for one `EndlessCollection` wrapper."""
     
-    def __init__(self, _, edb, key, yml = None, defaults = None, _mongo = None):
+    def __init__(self, _: EndlessCollection, edb: EndlessDatabase | None, key: Any, yml: dict[str, Any] | None = None, defaults: EndlessCollection | None = None, _mongo: pymongo.database.Database | None = None) -> None:
+        """Bind a collection wrapper to MongoDB or to read-only YAML data."""
         self.protected = False
         self.static = False
         self.debug = False
@@ -555,25 +698,22 @@ class CollectionLogicContainer():
             
         if self._collection is None:
             if yml is None:            
-                raise Exception(f"You must provide either yml or edb object for {self}")
+                raise ReadOnlyError(f"You must provide either yml or edb object for {self}")
             else:
                 self._reload(yml)
-        
-        pass
     
-    def __call__(self):
+    def __call__(self) -> EndlessCollection:
+        """Return the public collection wrapper owned by this logic container."""
         return self._
     
     def __repr__(self) -> str:
+        """Return the debugger-friendly logic representation."""
         return f"🧩logic:({self.repr()})"
     
-    #endregion 📌Magic
-    
-    #region 📌Methods
-    
-    def _reload(self, yml):
+    def _reload(self, yml: dict[str, Any] | None) -> None:
+        """Refresh a read-only YAML collection from parsed YAML data."""
         if not isinstance(yml, dict):
-            raise Exception(f"YAML collection data for {self} must be a dict")
+            raise InvalidValueError(f"YAML collection data for {self} must be a dict")
 
         for _key in list(self._keys):
             if _key not in yml and _key in self.__:
@@ -583,7 +723,6 @@ class CollectionLogicContainer():
         for _key in yml:
             value = yml[_key]
             self._keys.append(_key)  
-            #self.__slots__.append(key)
             if isinstance(value, dict):
                 self.__[_key] = self.descendant(_key, value)
             elif isinstance(value, ObjectId):                   
@@ -591,7 +730,8 @@ class CollectionLogicContainer():
             else:
                 self.__[_key] = value                
     
-    def descendant(self, key, value, virtual = False):
+    def descendant(self, key: Any, value: dict[str, Any] | None, virtual: bool = False) -> EndlessDocument:
+        """Return a cached child document or create one for a collection item."""
         if self._edb is not None:
             _path = f"{self.path(True)}/{key}"
             documents = self._edb().documents()
@@ -606,17 +746,20 @@ class CollectionLogicContainer():
         
         return EndlessDocument(key, value, self, virtual)
 
-    def len(self):
+    def len(self) -> int:
+        """Return document count for Mongo-backed collections or YAML key count."""
         collection = self.mongo()
         if collection is not None:            
             return collection.count_documents({})
         
         return len(self._keys)
     
-    def key(self):
+    def key(self) -> Any:
+        """Return the collection name."""
         return self._key
     
-    def path(self, full = True):
+    def path(self, full: bool = True) -> str:
+        """Return the full database path or the collection-local path."""
         if full:
             if self._edb is None:            
                 return f"yml/{self._key}"
@@ -624,7 +767,8 @@ class CollectionLogicContainer():
         else:
             return self._key
         
-    def repr(self, srepr = None):
+    def repr(self, srepr: str | None = None) -> str:
+        """Build the compact debugger representation for this collection path."""
         parent = self.parent()
         repr = ""
         if self.debug:
@@ -651,33 +795,34 @@ class CollectionLogicContainer():
         else:
             return parent().repr(repr)            
     
-    def keys(self):
+    def keys(self) -> list[Any]:
+        """Return document ids for Mongo-backed collections or YAML keys."""
         if self._collection is None:
             return self._keys
         
         try:
             return self._collection.distinct("_id")
-        except Exception as e:
+        except Exception:
             keys = []   
             
         return keys    
         
-    def set(self, path: str, value: Any, descendant_expected = None):
+    def set(self, path: str, value: Any, descendant_expected: Any = None) -> None:
+        """Set a root document or nested field using MongoDB dotted updates."""
         if self.protected:
-            raise Exception(f"{self} is protected and read-only")
+            raise ReadOnlyError(f"{self} is protected and read-only")
         
         if descendant_expected is not None and inspect.isclass(descendant_expected):
             if not isinstance(value, descendant_expected):
-                raise Exception(f"Value must be instance of {descendant_expected}")
+                raise TypeExpectationError(f"Value must be instance of {descendant_expected}")
         
         collection = self.mongo()
-        if collection == None:
-            raise Exception(f"{self} is read-only") 
+        if collection is None:
+            raise ReadOnlyError(f"{self} is read-only") 
         else:
             _path = path.split(".")
-            path_length = len(_path)   
             
-            if path_length == 1:
+            if len(_path) == 1:
                 _data = { "$set": value }
             else:
                 if isinstance(value, EndlessDocument):
@@ -687,37 +832,29 @@ class CollectionLogicContainer():
                     _value = value
                 _data = { "$set": { ".".join(_path[1:]): _value } }
             
-            try:
-                _id = int(_path[0])
-                pass
-            except:
-                _id = _path[0]
+            _id = normalize_document_key(_path[0])
             
             collection.update_one({ "_id": _id }, _data, upsert=True)        
-            #if not isinstance(value, dict):
             _path = f"{self.path(True)}/{_path[0]}"
             documents = self._edb().documents()
-            #_path = f"{self._key}.{path}"
             if _path in documents:
                 documents[_path]().reload()
     
-    def find(self, filter):
-        found = False
+    def find(self, filter: dict[str, Any]) -> Iterator[EndlessDocument]:
+        """Yield documents matching a PyMongo filter."""
         for document in self.mongo().find(filter, {"_id": 1}):
-            found = True
             yield self.descendant(document["_id"], None)
-
-        if not found:
-            yield None
         
-    def find_one(self, filter):
+    def find_one(self, filter: dict[str, Any]) -> EndlessDocument | None:
+        """Return the first matching document wrapper or `None`."""
         document = self.mongo().find_one(filter, {"_id": 1})
         if document is not None:
             return self.descendant(document["_id"], None)       
         else:
             return None
         
-    def reload(self):
+    def reload(self) -> None:
+        """Reload a YAML-backed collection from its source path."""
         if self._edb is None:
             with open(self._source_path, 'r') as stream:
                 try:         
@@ -726,23 +863,28 @@ class CollectionLogicContainer():
                     print(f'YAML parsing error:\n{exc}')
                     raise exc
         else:
-            raise Exception(f"{self} can reload only yml collection")
+            raise ReadOnlyError(f"{self} can reload only yml collection")
         
         self._reload(yml)
             
-    def mongo(self) -> pymongo.collection.Collection:
+    def mongo(self) -> pymongo.collection.Collection | None:
+        """Return the backing PyMongo collection, or `None` for YAML data."""
         return self._collection
     
-    def collections(self):
+    def collections(self) -> dict[str, EndlessCollection]:
+        """Return the owning database collection cache."""
         return self._parent_logic.collections()
     
-    def parent(self):
+    def parent(self) -> EndlessDatabase | None:
+        """Return the owning database wrapper, or `None` for YAML collections."""
         return self.edb()
         
-    def edb(self):
+    def edb(self) -> EndlessDatabase | None:
+        """Return the owning database wrapper."""
         return self._edb
     
-    def delete(self):
+    def delete(self) -> None:
+        """Drop the MongoDB collection and remove it from the database cache."""
         collections = self._edb().collections()
         if self._key in collections:
             del collections[self._key]
@@ -750,14 +892,16 @@ class CollectionLogicContainer():
         self._collection.drop()
         self.virtual = True
     
-    def to_dict(self, *args, **kwargs):
+    def to_dict(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
+        """Yield serializable key/value pairs for every document in the collection."""
         _self = self._
         keys = self.keys()
         for key in keys:
             data = dict(_self[key]().to_dict(**kwargs))
             yield (key, data)
     
-    def to_json(self, *args, **kwargs):
+    def to_json(self, *args: Any, **kwargs: Any) -> str:
+        """Serialize the collection to JSON, optionally base64-encoded."""
         if "base64" in kwargs and kwargs["base64"]:
             to_base64 = kwargs.pop("base64")
         else:
@@ -771,12 +915,15 @@ class CollectionLogicContainer():
                  
         return _json   
 
-    def to_yml(self):
+    def to_yml(self) -> str:
+        """Serialize the collection to YAML."""
         _dict = dict(self.to_dict())
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
-    def from_yml(path): 
+    @staticmethod
+    def from_yml(path: str | Path) -> EndlessCollection:
+        """Create a read-only collection wrapper from a YAML file."""
         path = Path(path).expanduser()
         with open(path, 'r') as stream:
             try:         
@@ -785,20 +932,19 @@ class CollectionLogicContainer():
                 print(f'YAML parsing error:\n{exc}')
                 raise exc
         return EndlessCollection(path, None, yml)
-
-    #endregion 📌Methods
     
 class DatabaseLogicContainer():
+    """Mutable operational state for one `EndlessDatabase` wrapper."""
     
-    _collections: dict
-    _documents: dict
-        
-    #region 📌Magic
+    _collections: dict[str, EndlessCollection]
+    _documents: dict[str, EndlessDocument]
     
-    def __call__(self):
+    def __call__(self) -> EndlessDatabase:
+        """Return the public database wrapper owned by this logic container."""
         return self._
         
-    def __init__(self, _, url = None, host = "localhost", port = 27017, user = "", password = ""):
+    def __init__(self, _: EndlessDatabase, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None) -> None:
+        """Connect the wrapper to MongoDB and initialize collection caches."""
         self._cfg = EndlessConfiguration()
         self.debug = False
         self._ = _
@@ -808,22 +954,21 @@ class DatabaseLogicContainer():
         self._defaults_collection = CollectionLogicContainer.from_yml(self._cfg.CONFIG_YML)
         defaults = self.defaults()
         
-        self._url = self.url_info(self._cfg.MONGO_URI)
-        self._key = self._cfg.MONGO_DATABASE
+        connection_url = self.resolve_url(url, host, port, user, password, database)
+        self._url = self.url_info(connection_url)
+        self._key = database or mongodb_database_from_url(connection_url) or self._cfg.MONGO_DATABASE
         
-        self._mongo = pymongo.MongoClient(self._cfg.MONGO_URI, connect=False)
+        self._mongo = pymongo.MongoClient(connection_url, connect=False)
         self._edb = self._mongo[self._key]
         
         self._collections[self._cfg.CONFIG_COLLECTION] = EndlessCollection(self._cfg.CONFIG_COLLECTION, self(), None, defaults, self._edb)
     
     def __repr__(self) -> str:
+        """Return the debugger-friendly logic representation."""
         return f"🧩logic:({self.repr()})"
            
-    #endregion 📌Magic
-             
-    #region 📌Methods
-           
-    def repr(self, srepr = None):
+    def repr(self, srepr: str | None = None) -> str:
+        """Build the compact debugger representation for this database path."""
         repr = ""
         if self.debug:
             repr += "🐞"
@@ -841,51 +986,90 @@ class DatabaseLogicContainer():
         else:
             return f'{repr}/{srepr}'       
     
-    def len(self):
+    def len(self) -> int:
+        """Return the number of non-config collections visible in the database."""
         return len(self.keys())
     
-    def key(self):
+    def key(self) -> str:
+        """Return the configured MongoDB database name."""
         return self._key
         
-    def keys(self):
+    def keys(self) -> list[str]:
+        """Return MongoDB collection names excluding the config collection."""
         _filter = {"name": {"$regex": r"^(?!^%s$).+$" % self._cfg.CONFIG_COLLECTION}}
         return self.mongo().list_collection_names(filter=_filter)
         
     def mongo(self) -> pymongo.database.Database:
+        """Return the backing PyMongo database."""
         return self._edb
     
-    def parent():
+    def parent(self) -> None:
+        """Return `None` because the database wrapper is the root object."""
         return None
     
-    def config(self):
+    def config(self) -> EndlessCollection:
+        """Return the configured config collection wrapper."""
         return self._collections[self._cfg.CONFIG_COLLECTION]
     
-    def defaults(self):
+    def defaults(self) -> EndlessCollection:
+        """Return the read-only defaults collection loaded from YAML."""
         return self._defaults_collection
     
-    def documents(self):
+    def documents(self) -> dict[str, EndlessDocument]:
+        """Return the database-wide document cache keyed by full wrapper path."""
         return self._documents
     
-    def collections(self):
+    def collections(self) -> dict[str, EndlessCollection]:
+        """Return the database-wide collection cache."""
         return self._collections
     
-    def url_info(self, url):
-        pattern = r"(?i)^mongodb\:\/\/(?P<user>.*):(?P<password>.*)\@(?P<host>.*)\:(?P<port>\d+)\/(?P<database>.*)?\?(?P<paramaters>.*)?$"
-        masked = re.sub(pattern, partial(re_mask_subgroup, "password", "*"), url)
-        
-        return {"url": url, "masked": masked}                  
+    def url_info(self, url: str) -> dict[str, str]:
+        """Return the MongoDB URL with a masked password for display/debugging."""
+        return {"url": url, "masked": mask_mongodb_url(url)}                  
+
+    def resolve_url(self, url: str | None, host: str | None, port: int | None, user: str | None, password: str | None, database: str | None = None) -> str:
+        """Resolve per-instance connection arguments over configuration defaults."""
+        if url:
+            return url
+
+        explicit_parts = any(value is not None for value in [host, port, user, password])
+        if not explicit_parts:
+            return self._cfg.MONGO_URI
+
+        return self.build_url(
+            host or self._cfg.MONGO_HOST,
+            self._cfg.MONGO_PORT if port is None else port,
+            self._cfg.MONGO_USER if user is None else user,
+            self._cfg.MONGO_PASSWORD if password is None else password,
+            database or self._cfg.MONGO_DATABASE,
+        )
     
-    def build_url(self, host, port, user, password):        
-        return f"mongodb://{user}:{password}@{host}:{port}/?authMechanism=SCRAM-SHA-256"
+    def build_url(self, host: str, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None) -> str:
+        """Build a SCRAM-SHA-256 MongoDB URL from connection parts."""
+        credentials = ""
+        if user or password:
+            credentials = f"{quote(user or '', safe='')}:{quote(password or '', safe='')}@"
+
+        host_part = host
+        if ":" in host_part and not host_part.startswith("["):
+            host_part = f"[{host_part}]"
+        if port is not None:
+            host_part = f"{host_part}:{port}"
+
+        path = f"/{database}" if database else "/"
+        query = urlencode({"authSource": "admin", "authMechanism": "SCRAM-SHA-256"}) if credentials else ""
+        return urlunsplit(("mongodb", f"{credentials}{host_part}", path, query, ""))
     
-    def to_dict(self):
+    def to_dict(self) -> Iterator[tuple[str, Any]]:
+        """Yield serializable key/value pairs for every collection."""
         _self = self._
         keys = self.keys()
         for key in keys:
             data = dict(_self[key]().to_dict())
             yield (key, data)            
             
-    def to_json(self, *args, **kwargs):
+    def to_json(self, *args: Any, **kwargs: Any) -> str:
+        """Serialize the database to JSON, optionally base64-encoded."""
         if "base64" in kwargs and kwargs["base64"]:
             to_base64 = kwargs.pop("base64")
         else:
@@ -899,12 +1083,14 @@ class DatabaseLogicContainer():
                    
         return _json    
 
-    def to_yml(self):
+    def to_yml(self) -> str:
+        """Serialize the database to YAML."""
         _dict = dict(self.to_dict())
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
-    def load_defaults(self):
+    def load_defaults(self) -> None:
+        """Copy YAML defaults into the config collection when configured to rewrite."""
         defaults = self.defaults()
         config = self.config()
         if defaults.config_collection_rewrite:
@@ -914,21 +1100,26 @@ class DatabaseLogicContainer():
                     data = dict(_value.to_dict())
                     config[key] = data
         
-    #endregion 📌Methods
-    
-#endregion 📌Logic
 
-#region 📌Endless
+
+# ---------------------------------------------------------------------------
+# Public dynamic wrappers
+# ---------------------------------------------------------------------------
 
 class EndlessDocument():
+    """Dynamic wrapper for one MongoDB/YAML document.
+
+    Attributes map to document fields. Calling the wrapper returns its
+    `DocumentLogicContainer`, unless fluent flags such as `debug=True` are used.
+    """
     
-    def __init__(self, key, obj, parent_logic, virtual = False):
-        self.__dict__["***"] = DocumentLogicContainer(self, key, obj, parent_logic, virtual)                                   
+    def __init__(self, key: Any, obj: dict[str, Any] | None, parent_logic: Any, virtual: bool = False) -> None:
+        """Create a public document wrapper and attach its logic container."""
+        self.__dict__[LOGIC_KEY] = DocumentLogicContainer(self, key, obj, parent_logic, virtual)                                   
     
-    #region 📌Magoc
-    
-    def __call__(self, descendant_expected = None, **kwargs) -> DocumentLogicContainer:
-        _self = self.__dict__["***"]       
+    def __call__(self, descendant_expected: Any = None, **kwargs: Any) -> DocumentLogicContainer | EndlessDocument:
+        """Return logic, configure fluent flags, or project a typed/default child."""
+        _self = self.__dict__[LOGIC_KEY]       
         _parent = _self.parent()()
         if _parent.protected:
             _self.protected = True
@@ -990,17 +1181,21 @@ class EndlessDocument():
         else:
             return _self
     
-    def __delete__(self, instance):
+    def __delete__(self, instance: Any) -> None:
+        """Descriptor hook intentionally unused by the dynamic wrapper."""
         pass
     
-    def __del__(self):
+    def __del__(self) -> None:
+        """Keep destruction side-effect free; Mongo deletes are explicit."""
         pass
     
-    def __len__(self):                
+    def __len__(self) -> int:
+        """Return the number of known fields."""
         return self().len()
     
     def __str__(self) -> str:                
-        _self = self.__dict__["***"]
+        """Return a compact human-readable document label."""
+        _self = self.__dict__[LOGIC_KEY]
         _str = f"{_self.key()}"
         _str += "{" + f"ℓ{_self.len()}" + "}"
         if _self.virtual:
@@ -1008,42 +1203,64 @@ class EndlessDocument():
         return _str
     
     def __repr__(self) -> str:
-        _self = self.__dict__["***"]               
+        """Return the debugger-friendly document path representation."""
+        _self = self.__dict__[LOGIC_KEY]               
         return _self.repr()
+
+    def __getattribute__(self, key: str) -> Any:
+        """Enforce strict typed descendant checks for already-loaded fields."""
+        if key in {"__class__", "__dict__", LOGIC_KEY} or is_magic_method(key):
+            return object.__getattribute__(self, key)
+
+        data = object.__getattribute__(self, "__dict__")
+        if key in data and LOGIC_KEY in data:
+            logic = data[LOGIC_KEY]
+            descendant_expected = logic.descendant_expected
+            if logic.descendant_exception and inspect.isclass(descendant_expected):
+                value = data[key]
+                if not isinstance(value, descendant_expected):
+                    if not (descendant_expected is dict and isinstance(value, EndlessDocument)):
+                        raise TypeExpectationError(f"Property {key} is not instance of {descendant_expected}")
+            return data[key]
+
+        return object.__getattribute__(self, key)
     
-    def __eq__(self, other):
-        _self = self.__dict__["***"]
+    def __eq__(self, other: Any) -> bool:
+        """Compare documents by full path; `None` means a virtual document."""
+        _self = self.__dict__[LOGIC_KEY]
         if other is None:
             return _self.virtual
         if isinstance(other, EndlessDocument):
             return _self.path(True) == other().path(True)
         
-        raise Exception("This type of comparison is not supported yet")
+        raise UnsupportedComparisonError("This type of comparison is not supported yet")
     
-    def __iter__(self):
-        _self = self.__dict__["***"]
+    def __iter__(self) -> Iterator[tuple[Any, Any]]:
+        """Iterate over known field names and values."""
+        _self = self.__dict__[LOGIC_KEY]
         for key in _self.keys():
             if key in self.__dict__:
                 yield key, self.__dict__[key]
             else:
                 path = f"{_self.path(True)}/{key}"
-                documents =_self.edb()().documents()
+                documents = _self.edb()().documents()
                 if path in documents:
                     yield key, documents[path]
                 else:
-                    raise Exception(f"Property {key} not found in {self}")
+                    raise PropertyNotFoundError(f"Property {key} not found in {self}")
             
-    def __setattr__(self, key: str, value):
+    def __setattr__(self, key: str, value: Any) -> None:
+        """Persist a field assignment to MongoDB through the owning collection."""
         if key == "id" or key == "_id":
-            raise Exception(f"Id is read-only")
+            raise ReadOnlyError(f"Id is read-only")
         
         valid_types = [EndlessDocument, str, int, float, bool, dict, list, bytes, bytearray, datetime, uuid.UUID, type(None)]
         if not type(value) in valid_types:
-            raise Exception(f"Value must be instance of {valid_types}")
+            raise InvalidValueError(f"Value must be instance of {valid_types}")
              
-        _self = self.__dict__["***"]
+        _self = self.__dict__[LOGIC_KEY]
         if _self.protected:
-            raise Exception(f"{self} is protected and read-only")
+            raise ReadOnlyError(f"{self} is protected and read-only")
         
         if is_magic_method(key):
             key = "*" + key
@@ -1051,11 +1268,12 @@ class EndlessDocument():
         _path = _self.path().replace("/", ".")
         _self.collection()().set(f"{_path}.{key}", value, _self.descendant_expected)
     
-    def __getattr__(self, key: str):
+    def __getattr__(self, key: str) -> Any:
+        """Resolve a field, id alias, typed descendant, or virtual child document."""
         if key == "id" or key == "_id":
-            return self.__dict__["***"].key()
+            return self.__dict__[LOGIC_KEY].key()
         
-        _self = self.__dict__["***"]                
+        _self = self.__dict__[LOGIC_KEY]                
         descendant_expected = _self.descendant_expected
         descendant_expected_is_type = inspect.isclass(descendant_expected)
         if descendant_expected_is_type:            
@@ -1077,15 +1295,16 @@ class EndlessDocument():
             if _self.descendant_exception and descendant_expected_is_type:
                 if not isinstance(self.__dict__[key], descendant_expected):
                     if not (descendant_expected is dict and isinstance(self.__dict__[key], EndlessDocument)):                        
-                        raise Exception(f"Property {key} is not instance of {descendant_expected}")
+                        raise TypeExpectationError(f"Property {key} is not instance of {descendant_expected}")
                     
             return self.__dict__[key]
         elif _self.descendant_exception:
-            raise Exception(f"Property {key} not found in {self}")
+            raise PropertyNotFoundError(f"Property {key} not found in {self}")
         
         return _self.descendant(key, None, True)
     
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
+        """Resolve a document field by key, supporting dotted nested paths."""
         if isinstance(key, int):
             return self.__getattr__(key)
         
@@ -1098,7 +1317,8 @@ class EndlessDocument():
         
         return self.__getattr__(key)
      
-    def __setitem__(self, key, value):        
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a document field by key, supporting dotted nested paths."""
         if is_magic_method(key):
             key = "*" + key
                     
@@ -1110,14 +1330,15 @@ class EndlessDocument():
         return self.__setattr__(key, value)
 
 class EndlessCollection():
+    """Dynamic wrapper for one MongoDB collection or read-only YAML collection."""
     
-    #__slots__ = ["__dict__"]
+    def __init__(self, key: Any, edb: EndlessDatabase | None = None, yml: dict[str, Any] | None = None, defaults: EndlessCollection | None = None, _database: pymongo.database.Database | None = None) -> None:
+        """Create a public collection wrapper and attach its logic container."""
+        self.__dict__[LOGIC_KEY] = CollectionLogicContainer(self, edb, key, yml, defaults, _database)                                               
     
-    def __init__(self, key, edb = None, yml = None, defaults = None, _database = None):
-        self.__dict__["***"] = CollectionLogicContainer(self, edb, key, yml, defaults, _database)                                               
-    
-    def __call__(self, *args, **kwargs) -> CollectionLogicContainer:        
-        _self = self.__dict__["***"]       
+    def __call__(self, *args: Any, **kwargs: Any) -> CollectionLogicContainer | EndlessCollection:
+        """Return logic, or configure fluent collection flags."""
+        _self = self.__dict__[LOGIC_KEY]       
         
         ret = False
         if "debug" in kwargs and kwargs["debug"]:
@@ -1137,49 +1358,55 @@ class EndlessCollection():
         else:
             return _self
     
-    def __eq__(self, other):
-        _self = self.__dict__["***"]
+    def __eq__(self, other: Any) -> bool | None:
+        """Compare collections by full path; `None` means virtual/read-only absence."""
+        _self = self.__dict__[LOGIC_KEY]
         if other is None:
             return _self.virtual
         if isinstance(other, EndlessCollection):
             return _self.path(True) == other().path(True)
         
-    def __delete__(self, instance):
+    def __delete__(self, instance: Any) -> None:
+        """Descriptor hook intentionally unused by the dynamic wrapper."""
         pass
               
-    def __len__(self):
-        _self = self.__dict__["***"]
+    def __len__(self) -> int:
+        """Return the collection document count."""
+        _self = self.__dict__[LOGIC_KEY]
         return _self.len()
             
     def __str__(self) -> str:
-        _self = self.__dict__["***"]
+        """Return a compact human-readable collection label."""
+        _self = self.__dict__[LOGIC_KEY]
         _str = f"{_self.key()}"
         _str += "{" + f"ℓ{_self.len()}" + "}"
         
         return _str    
     
     def __repr__(self) -> str:
-        _self = self.__dict__["***"]
+        """Return the debugger-friendly collection path representation."""
+        _self = self.__dict__[LOGIC_KEY]
         return _self.repr()
     
-    def __iter__(self):
-        _self = self.__dict__["***"]
+    def __iter__(self) -> Iterator[tuple[Any, EndlessDocument]]:
+        """Iterate over document ids and document wrappers."""
+        _self = self.__dict__[LOGIC_KEY]
         for key in _self.keys():
             yield key, self.__getattr__(key)
                    
-    def __getattr__(self, key):
-        _self = self.__dict__["***"]
+    def __getattr__(self, key: Any) -> Any:
+        """Resolve an existing, defaulted, or virtual document by id."""
+        _self = self.__dict__[LOGIC_KEY]
         collection = _self.mongo()
         if key in self.__dict__:
             if collection is None or key not in _self.keys():
                 return self.__dict__[key]
         
-        if collection == None:
+        if collection is None:
             return None
         else:
             _path = f"{_self.path(True)}/{key}"
             documents = _self._edb().documents()
-            #_path = f"{self._key}.{path}"
             if _path in documents:
                 document = documents[_path]
                 document().reload()
@@ -1194,13 +1421,11 @@ class EndlessCollection():
                         _path = default_value().path()
                         _data = dict(default_value().to_dict())
                         _self.set(_path, _data)
-                        #collection.update_one({ "_id": key }, _data, upsert=True) 
                         _obj = collection.find_one({"_id": key})
                     else:
                         _self.set(_path, default_value)
                         return default_value              
             
-            #path = f"{_self.key()}/{key}"
             if _obj is None:
                 document = _self.descendant(key, None, True)            
             else:    
@@ -1209,38 +1434,37 @@ class EndlessCollection():
             documents[_path] = document
             return document            
     
-    def __setattr__(self, key, value):
-        _self = self.__dict__["***"]
+    def __setattr__(self, key: Any, value: Any) -> None:
+        """Create or replace a root document in the collection."""
+        _self = self.__dict__[LOGIC_KEY]
         if is_magic_method(key):
             key = "*" + key
             
         collection = _self.mongo()
         if collection is None:
-            raise Exception(f"{self} is read-only")
+            raise ReadOnlyError(f"{self} is read-only")
         
         if isinstance(value, dict):
             if not is_valid_value(value):
-                raise Exception(f"Value must be instance of valid EndlessDB value types")
+                raise InvalidValueError(f"Value must be instance of valid EndlessDB value types")
             collection.update_one({'_id': key }, {"$set": value}, upsert=True)            
             _path = f"{_self.path(True)}/{key}"
             documents = _self.edb()().documents()
             if _path in documents:
                 documents[_path]().reload()                         
         else:
-            raise Exception(f"You must pass dict value with filled _id property {self}")
+            raise InvalidValueError(f"You must pass dict value with filled _id property {self}")
     
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
+        """Resolve a document or nested document path by item access."""
         if key is None:
             return None
         
-        _self = self.__dict__["***"]
+        _self = self.__dict__[LOGIC_KEY]
         if is_magic_method(key):
             key = "*" + key
                         
-        try:
-            key = int(key)
-        except:
-            pass
+        key = normalize_document_key(key)
         
         if isinstance(key, int):
             return self.__getattr__(key)
@@ -1248,44 +1472,39 @@ class EndlessCollection():
         path = key.replace("/", ".").split(".", 1)
         if len(path) > 1:
             next_path = path[0]
-            try:
-                next_path = int(next_path)
-            except:
-                pass            
+            next_path = normalize_document_key(next_path)           
             return self[next_path][path[1]]
         
         return self.__getattr__(key)
      
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: Any, value: Any) -> None:
+        """Set a root document or nested document path by item access."""
         if is_magic_method(key):
             key = "*" + key
             
-        try:
-            key = int(key)
-        except:
-            pass            
+        key = normalize_document_key(key)          
         if isinstance(key, int):
             return self.__setattr__(key, value)
             
         path = key.split(".", 1)
         if len(path) > 1:
             next_path = path[0]
-            try:
-                next_path = int(next_path)
-            except:
-                pass            
+            next_path = normalize_document_key(next_path)          
             self[next_path][path[1]] = value
             return
         
         return self.__setattr__(key, value)
    
 class EndlessDatabase():
+    """Dynamic root wrapper for a MongoDB database."""
     
-    def __init__(self, url = None, host = None, port = None, user = None, password = None):
-        self.__dict__["***"] = DatabaseLogicContainer(self, url, host, port, user, password)        
+    def __init__(self, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None) -> None:
+        """Create a public database wrapper and attach its logic container."""
+        self.__dict__[LOGIC_KEY] = DatabaseLogicContainer(self, url, host, port, user, password, database)        
        
-    def __call__(self, *args, **kwargs) -> DatabaseLogicContainer:
-        _self = self.__dict__["***"]       
+    def __call__(self, *args: Any, **kwargs: Any) -> DatabaseLogicContainer | EndlessDatabase:
+        """Return logic, or configure fluent database flags."""
+        _self = self.__dict__[LOGIC_KEY]       
         
         ret = False
         if "debug" in kwargs and kwargs["debug"]:
@@ -1301,44 +1520,43 @@ class EndlessDatabase():
         else:
             return _self
     
-    def __delete__(self, instance):
+    def __delete__(self, instance: Any) -> None:
+        """Descriptor hook intentionally unused by the dynamic wrapper."""
         pass
               
-    def __len__(self):
-        _self = self.__dict__["***"]
+    def __len__(self) -> int:
+        """Return the number of non-config collections."""
+        _self = self.__dict__[LOGIC_KEY]
         return _self.len()
     
     def __str__(self) -> str:
-        _self = self.__dict__["***"]
+        """Return a compact human-readable database label."""
+        _self = self.__dict__[LOGIC_KEY]
         _str = f"{_self.key()}"
         _str += "{" + f"ℓ{_self.len()}" + "}"
         return _str
     
     def __repr__(self) -> str:
-        _self = self.__dict__["***"]
+        """Return the debugger-friendly database representation."""
+        _self = self.__dict__[LOGIC_KEY]
         return _self.repr()         
     
-    def __getattr__(self, key):
-        _self = self.__dict__["***"]
+    def __getattr__(self, key: Any) -> EndlessCollection:
+        """Resolve an existing or virtual collection by name/path."""
+        _self = self.__dict__[LOGIC_KEY]
         if key in self.__dict__:
             return self.__dict__[key]
         
-        try:
-            key = int(key)
-        except:
-            pass
+        key = normalize_document_key(key)
         if isinstance(key, int):
-            raise Exception(f"There is no numeric keys in edb")
+            raise InvalidValueError(f"There is no numeric keys in edb")
         
         path = key.split("/", 1)
         if len(path) > 1:
             next_path = path[0]
-            try:
-                next_path = int(next_path)
-            except:
-                pass
+            next_path = normalize_document_key(next_path)
             if isinstance(key, int):
-                raise Exception(f"There is no numeric keys in edb")
+                raise InvalidValueError(f"There is no numeric keys in edb")
         
             return self[next_path][path[1]]
         
@@ -1352,38 +1570,34 @@ class EndlessDatabase():
                     
         return collection
     
-    def __setattr__(self, key, value):
-        try:
-            key = int(key)
-        except:
-            pass
+    def __setattr__(self, key: Any, value: Any) -> None:
+        """Route nested writes to collections; direct root writes are read-only."""
+        key = normalize_document_key(key)
         if isinstance(key, int):
-            raise Exception(f"There is no numeric keys in edb")
+            raise InvalidValueError(f"There is no numeric keys in edb")
         
         path = key.split("/", 1)
         if len(path) > 1:
             next_path = path[0]
-            try:
-                next_path = int(next_path)
-            except:
-                pass
+            next_path = normalize_document_key(next_path)
             if isinstance(key, int):
-                raise Exception(f"There is no numeric keys in edb")
+                raise InvalidValueError(f"There is no numeric keys in edb")
         
             self[next_path][path[1]] = value
             return
         
-        raise Exception(f"This is edb root and it is read-only")
+        raise ReadOnlyError(f"This is edb root and it is read-only")
     
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: Any, value: Any) -> None:
+        """Set a nested collection/document path by item access."""
         self.__setattr__(key, value)
             
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> EndlessCollection:
+        """Resolve a collection or nested path by item access."""
         return self.__getattr__(key)      
     
-    def __iter__(self):
-        _self = self.__dict__["***"]
+    def __iter__(self) -> Iterator[tuple[str, EndlessCollection]]:
+        """Iterate over collection names and collection wrappers."""
+        _self = self.__dict__[LOGIC_KEY]
         for key in _self.keys():
             yield key, self.__getattr__(key)  
-
-#endregion 📌Endless

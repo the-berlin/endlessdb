@@ -213,20 +213,20 @@ switch ($uploadChoice) {
     "no upload" { Write-Host "Upload skipped." }
     "TestPyPI only" {
         if (Ask-YesNo "Upload to TestPyPI now? Twine may prompt for credentials." $false) {
-            Invoke-RepoCommand @($Python, "-m", "twine", "upload", "--repository-url", "https://test.pypi.org/legacy/", "dist/*")
+            Invoke-RepoCommand @(Join-Path $ScriptRoot "upload-testpypi.ps1")
         }
     }
     "PyPI production only" {
         if (Ask-YesNo "Upload to public PyPI now? Twine may prompt for credentials." $false) {
-            Invoke-RepoCommand @($Python, "-m", "twine", "upload", "dist/*")
+            Invoke-RepoCommand @(Join-Path $ScriptRoot "upload-pypi.ps1")
         }
     }
     "TestPyPI then PyPI production" {
         if (Ask-YesNo "Upload to TestPyPI now? Twine may prompt for credentials." $false) {
-            Invoke-RepoCommand @($Python, "-m", "twine", "upload", "--repository-url", "https://test.pypi.org/legacy/", "dist/*")
+            Invoke-RepoCommand @(Join-Path $ScriptRoot "upload-testpypi.ps1")
         }
         if (Ask-YesNo "Upload the same artifacts to public PyPI now?" $false) {
-            Invoke-RepoCommand @($Python, "-m", "twine", "upload", "dist/*")
+            Invoke-RepoCommand @(Join-Path $ScriptRoot "upload-pypi.ps1")
         }
     }
 }
