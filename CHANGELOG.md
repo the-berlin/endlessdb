@@ -2,7 +2,7 @@
 
 All notable changes to EndlessDB are documented in this file.
 
-## Unreleased
+## 0.5.2 - 2026-05-20
 
 ### Changed
 - Added Ruff format checks to CI and documented the formatter workflow.
