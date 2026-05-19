@@ -1,4 +1,5 @@
-from ...src.endlessdb import EndlessDatabase
+from endlessdb import EndlessDatabase
+
 
 class EndlessService():
     

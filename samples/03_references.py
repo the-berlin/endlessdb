@@ -1,6 +1,5 @@
 from common import make_database, reset_collection, sample_key
 
-
 edb = make_database()
 employees_name = sample_key("employees")
 departments_name = sample_key("departments")
@@ -18,7 +17,7 @@ try:
 
     print("employee:", john.name)
     print("department:", john.department.name)
-    print("department id:", dict(john().to_dict(ref_to_id=True))["department"])
+    print("department id:", john().to_dict(ref_to_id=True)["department"])
 finally:
     reset_collection(edb, employees_name)
     reset_collection(edb, departments_name)

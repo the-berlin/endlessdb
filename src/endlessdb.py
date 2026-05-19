@@ -22,11 +22,11 @@ from typing import Any, Iterator
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import bson
-from bson.objectid import ObjectId
 import pymongo
 import pymongo.collection
 import pymongo.database
 import yaml
+from bson.objectid import ObjectId
 
 __all__ = [
     "CollectionLogicContainer",
@@ -312,6 +312,20 @@ def is_valid_value(value: Any) -> bool:
     return False
 
 
+def to_storage_value(value: Any) -> Any:
+    """Convert EndlessDB wrapper values into MongoDB-storable values."""
+    if isinstance(value, EndlessDocument):
+        return value().to_ref()
+
+    if isinstance(value, dict):
+        return {key: to_storage_value(item) for key, item in value.items()}
+
+    if isinstance(value, list):
+        return [to_storage_value(item) for item in value]
+
+    return value
+
+
 def normalize_document_key(key: Any) -> Any:
     """Coerce string integer keys to int while leaving other keys unchanged."""
     try:
@@ -369,6 +383,8 @@ class DocumentLogicContainer():
         
         self.static = False
         self.debug = False      
+        self.emojify = getattr(parent_logic, "emojify", False)
+        self.strict = getattr(parent_logic, "strict", False)
         self.virtual = virtual
         self.protected = parent_logic.protected
         
@@ -385,7 +401,9 @@ class DocumentLogicContainer():
     
     def __repr__(self) -> str:
         """Return the debugger-friendly logic representation."""
-        return f"🧩logic({self.repr()})"
+        if self.emojify or self.debug:
+            return f"🧩logic({self.repr()})"
+        return f"Logic({self.repr()})"
     
     def _reload(self, obj: dict[str, Any] | None) -> None:
         """Refresh wrapper attributes from MongoDB, YAML, or supplied data."""
@@ -476,6 +494,24 @@ class DocumentLogicContainer():
     def repr(self, srepr: str | None = None) -> str:
         """Build the compact debugger representation for this document path."""
         parent = self.parent()
+        if not (self.emojify or self.debug):
+            flags = []
+            if self.virtual:
+                flags.append("virtual=True")
+            if self.protected:
+                flags.append("protected=True")
+            if self.descendant_expected is not None:
+                flags.append("typed=True")
+
+            flag_text = f", {', '.join(flags)}" if flags else ""
+            repr = f"Document({self._key!r}, len={self.len()}{flag_text})"
+            if srepr is not None:
+                repr = f"{repr}/{srepr}"
+
+            if parent is None:
+                return repr
+            return parent().repr(repr)
+
         repr = ""
         if self.debug:
             repr += "🐞"
@@ -564,11 +600,30 @@ class DocumentLogicContainer():
         """Reload the document from its backing source and return the wrapper."""
         self._reload(None)
         return self._  
+
+    def unset(self, path: str) -> EndlessDocument:
+        """Unset a root or nested field below this document."""
+        if not path:
+            raise InvalidValueError("Unset path must not be empty")
+
+        if self.protected:
+            raise ReadOnlyError(f"{self} is protected and read-only")
+
+        document_path = self.path().replace("/", ".")
+        self.collection()().unset(f"{document_path}.{path}")
+        return self._
     
     def delete(self) -> None:
         """Delete the root Mongo document, or delegate nested deletion upward."""
+        if self.protected:
+            raise ReadOnlyError(f"{self} is protected and read-only")
+
         if isinstance(self._parent_logic, CollectionLogicContainer):
-            self.mongo().delete_one({ "_id": self._key })
+            collection = self.mongo()
+            if collection is None:
+                raise ReadOnlyError(f"{self} is read-only")
+
+            collection.delete_one({ "_id": self._key })
             documents = self._parent_logic.edb()().documents()
             path = self.path(True)
             if path in documents:
@@ -576,7 +631,12 @@ class DocumentLogicContainer():
                 document().virtual = True
                 del documents[path]
         else:
-            self._parent_logic.delete()
+            self.collection()().unset(self.path().replace("/", "."))
+            self.virtual = True
+            documents = self.edb()().documents()
+            path = self.path(True)
+            if path in documents:
+                del documents[path]
         
     def edb(self) -> EndlessDatabase:
         """Return the owning database wrapper."""
@@ -599,7 +659,7 @@ class DocumentLogicContainer():
             "$id": self._key
         }
         
-    def to_dict(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
+    def iter_items(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
         """Yield serializable key/value pairs for the document."""
         if "exclude" in kwargs:
             exclude = kwargs["exclude"]
@@ -633,10 +693,14 @@ class DocumentLogicContainer():
                 if ref_to_id:
                     data = value().key()
                 else:
-                    data = dict(value().to_dict())
+                    data = value().to_dict()
                 yield (_key, data)
             else:
                 yield (_key, value)
+
+    def to_dict(self, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        """Return a serializable dictionary for the document."""
+        return dict(self.iter_items(*args, **kwargs))
             
     def to_json(self, *args: Any, **kwargs: Any) -> str:
         """Serialize the document to JSON, optionally base64-encoded."""
@@ -645,7 +709,7 @@ class DocumentLogicContainer():
         else:
             to_base64 = False
         
-        _dict = dict(self.to_dict(**kwargs))
+        _dict = self.to_dict(**kwargs)
         _json = json.dumps(
             _dict, 
             default=json_default_encoder, 
@@ -659,7 +723,7 @@ class DocumentLogicContainer():
 
     def to_yml(self) -> str:
         """Serialize the document to YAML."""
-        _dict = dict(self.to_dict())
+        _dict = self.to_dict()
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
@@ -672,6 +736,12 @@ class CollectionLogicContainer():
         self.protected = False
         self.static = False
         self.debug = False
+        self.emojify = False
+        self.strict = False
+        if edb is not None and LOGIC_KEY in edb.__dict__:
+            self.emojify = edb().emojify
+            self.strict = edb().strict
+        self.virtual = False
         
         if isinstance(key, Path):
             _key = key.name
@@ -708,7 +778,9 @@ class CollectionLogicContainer():
     
     def __repr__(self) -> str:
         """Return the debugger-friendly logic representation."""
-        return f"🧩logic:({self.repr()})"
+        if self.emojify or self.debug:
+            return f"🧩logic:({self.repr()})"
+        return f"Logic({self.repr()})"
     
     def _reload(self, yml: dict[str, Any] | None) -> None:
         """Refresh a read-only YAML collection from parsed YAML data."""
@@ -770,6 +842,26 @@ class CollectionLogicContainer():
     def repr(self, srepr: str | None = None) -> str:
         """Build the compact debugger representation for this collection path."""
         parent = self.parent()
+        if not (self.emojify or self.debug):
+            if self._edb is None:
+                repr = f"YamlCollection({str(self._source_path)!r}, len={self.len()})"
+            else:
+                flags = []
+                if self.protected:
+                    flags.append("protected=True")
+                if self.strict:
+                    flags.append("strict=True")
+
+                flag_text = f", {', '.join(flags)}" if flags else ""
+                repr = f"Collection({self._key!r}, len={self.len()}{flag_text})"
+
+            if srepr is not None:
+                repr = f"{repr}/{srepr}"
+
+            if parent is None:
+                return repr
+            return parent().repr(repr)
+
         repr = ""
         if self.debug:
             repr += "🐞"
@@ -806,6 +898,16 @@ class CollectionLogicContainer():
             keys = []   
             
         return keys    
+
+    def _reload_cached_document(self, key: Any) -> None:
+        """Reload a cached document wrapper after a MongoDB write."""
+        if self._edb is None:
+            return
+
+        path = f"{self.path(True)}/{key}"
+        documents = self._edb().documents()
+        if path in documents:
+            documents[path]().reload()
         
     def set(self, path: str, value: Any, descendant_expected: Any = None) -> None:
         """Set a root document or nested field using MongoDB dotted updates."""
@@ -821,37 +923,137 @@ class CollectionLogicContainer():
             raise ReadOnlyError(f"{self} is read-only") 
         else:
             _path = path.split(".")
-            
-            if len(_path) == 1:
-                _data = { "$set": value }
-            else:
-                if isinstance(value, EndlessDocument):
-                    _value = value()
-                    _value = _value.to_ref()
-                else:
-                    _value = value
-                _data = { "$set": { ".".join(_path[1:]): _value } }
-            
             _id = normalize_document_key(_path[0])
             
+            if len(_path) == 1:
+                self.patch(_id, value, descendant_expected)
+                return
+            else:
+                _value = to_storage_value(value)
+                _data = { "$set": { ".".join(_path[1:]): _value } }
+            
             collection.update_one({ "_id": _id }, _data, upsert=True)        
-            _path = f"{self.path(True)}/{_path[0]}"
-            documents = self._edb().documents()
-            if _path in documents:
-                documents[_path]().reload()
-    
-    def find(self, filter: dict[str, Any]) -> Iterator[EndlessDocument]:
-        """Yield documents matching a PyMongo filter."""
-        for document in self.mongo().find(filter, {"_id": 1}):
+            self._reload_cached_document(_id)
+
+    def patch(self, key: Any, value: dict[str, Any], descendant_expected: Any = None) -> None:
+        """Patch a root document with MongoDB `$set` semantics."""
+        if self.protected:
+            raise ReadOnlyError(f"{self} is protected and read-only")
+
+        collection = self.mongo()
+        if collection is None:
+            raise ReadOnlyError(f"{self} is read-only")
+
+        if descendant_expected is not None and inspect.isclass(descendant_expected):
+            if not isinstance(value, descendant_expected):
+                raise TypeExpectationError(f"Value must be instance of {descendant_expected}")
+
+        if not isinstance(value, dict):
+            raise InvalidValueError(f"You must pass dict value for {self}")
+
+        if not is_valid_value(value):
+            raise InvalidValueError("Value must be instance of valid EndlessDB value types")
+
+        key = normalize_document_key(key)
+        collection.update_one({"_id": key}, {"$set": to_storage_value(value)}, upsert=True)
+        self._reload_cached_document(key)
+
+    def replace(self, key: Any, value: dict[str, Any]) -> None:
+        """Replace a root document with MongoDB replacement semantics."""
+        if self.protected:
+            raise ReadOnlyError(f"{self} is protected and read-only")
+
+        collection = self.mongo()
+        if collection is None:
+            raise ReadOnlyError(f"{self} is read-only")
+
+        if not isinstance(value, dict):
+            raise InvalidValueError(f"You must pass dict value for {self}")
+
+        if not is_valid_value(value):
+            raise InvalidValueError("Value must be instance of valid EndlessDB value types")
+
+        key = normalize_document_key(key)
+        data = to_storage_value(value).copy()
+        data["_id"] = key
+        collection.replace_one({"_id": key}, data, upsert=True)
+        self._reload_cached_document(key)
+
+    def unset(self, path: str) -> None:
+        """Unset a field path below a root document."""
+        if self.protected:
+            raise ReadOnlyError(f"{self} is protected and read-only")
+
+        collection = self.mongo()
+        if collection is None:
+            raise ReadOnlyError(f"{self} is read-only")
+
+        parts = path.split(".")
+        if len(parts) < 2:
+            raise InvalidValueError("Unset path must include a document id and field path")
+
+        key = normalize_document_key(parts[0])
+        field_path = ".".join(parts[1:])
+        collection.update_one({"_id": key}, {"$unset": {field_path: ""}})
+        self._reload_cached_document(key)
+
+    def find(
+        self,
+        filter: dict[str, Any] | None = None,
+        sort: Any = None,
+        limit: int | None = None,
+        skip: int | None = None,
+        projection: Any = None,
+        **kwargs: Any,
+    ) -> Iterator[EndlessDocument]:
+        """Yield documents matching a PyMongo filter and cursor options."""
+        query = filter or {}
+        effective_projection = {"_id": 1} if projection is None else projection
+        cursor = self.mongo().find(query, effective_projection, **kwargs)
+        if sort is not None:
+            cursor = cursor.sort(sort)
+        if skip is not None:
+            cursor = cursor.skip(skip)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+
+        for document in cursor:
+            if "_id" not in document:
+                raise InvalidValueError("Projection must include _id when returning EndlessDocument wrappers")
             yield self.descendant(document["_id"], None)
         
-    def find_one(self, filter: dict[str, Any]) -> EndlessDocument | None:
+    def find_one(
+        self,
+        filter: dict[str, Any] | None = None,
+        sort: Any = None,
+        projection: Any = None,
+        **kwargs: Any,
+    ) -> EndlessDocument | None:
         """Return the first matching document wrapper or `None`."""
-        document = self.mongo().find_one(filter, {"_id": 1})
+        effective_projection = {"_id": 1} if projection is None else projection
+        document = self.mongo().find_one(filter or {}, effective_projection, sort=sort, **kwargs)
         if document is not None:
+            if "_id" not in document:
+                raise InvalidValueError("Projection must include _id when returning EndlessDocument wrappers")
             return self.descendant(document["_id"], None)       
         else:
             return None
+
+    def first(self, filter: dict[str, Any] | None = None, **kwargs: Any) -> EndlessDocument | None:
+        """Return the first document matching a filter."""
+        return self.find_one(filter, **kwargs)
+
+    def count(self, filter: dict[str, Any] | None = None) -> int:
+        """Return the number of documents matching a filter."""
+        return self.mongo().count_documents(filter or {})
+
+    def exists(self, filter: dict[str, Any] | None = None) -> bool:
+        """Return True when at least one document matches a filter."""
+        return self.find_one(filter) is not None
+
+    def raw(self) -> pymongo.collection.Collection | None:
+        """Return the backing PyMongo collection."""
+        return self.mongo()
         
     def reload(self) -> None:
         """Reload a YAML-backed collection from its source path."""
@@ -892,13 +1094,17 @@ class CollectionLogicContainer():
         self._collection.drop()
         self.virtual = True
     
-    def to_dict(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
+    def iter_items(self, *args: Any, **kwargs: Any) -> Iterator[tuple[Any, Any]]:
         """Yield serializable key/value pairs for every document in the collection."""
         _self = self._
         keys = self.keys()
         for key in keys:
-            data = dict(_self[key]().to_dict(**kwargs))
+            data = _self[key]().to_dict(**kwargs)
             yield (key, data)
+
+    def to_dict(self, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        """Return a serializable dictionary for every document in the collection."""
+        return dict(self.iter_items(*args, **kwargs))
     
     def to_json(self, *args: Any, **kwargs: Any) -> str:
         """Serialize the collection to JSON, optionally base64-encoded."""
@@ -907,7 +1113,7 @@ class CollectionLogicContainer():
         else:
             to_base64 = False
         
-        _dict = dict(self.to_dict(**kwargs))
+        _dict = self.to_dict(**kwargs)
         _json = json.dumps(_dict, default=json_default_encoder, ensure_ascii=False) 
         
         if to_base64:
@@ -917,7 +1123,7 @@ class CollectionLogicContainer():
 
     def to_yml(self) -> str:
         """Serialize the collection to YAML."""
-        _dict = dict(self.to_dict())
+        _dict = self.to_dict()
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
@@ -943,10 +1149,13 @@ class DatabaseLogicContainer():
         """Return the public database wrapper owned by this logic container."""
         return self._
         
-    def __init__(self, _: EndlessDatabase, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None) -> None:
+    def __init__(self, _: EndlessDatabase, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None, strict: bool = False, emojify: bool = False) -> None:
         """Connect the wrapper to MongoDB and initialize collection caches."""
         self._cfg = EndlessConfiguration()
         self.debug = False
+        self.emojify = emojify
+        self.protected = False
+        self.strict = strict
         self._ = _
         self.__ = _.__dict__          
         self._collections = {}
@@ -965,16 +1174,31 @@ class DatabaseLogicContainer():
     
     def __repr__(self) -> str:
         """Return the debugger-friendly logic representation."""
-        return f"🧩logic:({self.repr()})"
+        if self.emojify or self.debug:
+            return f"🧩logic:({self.repr()})"
+        return f"Logic({self.repr()})"
            
     def repr(self, srepr: str | None = None) -> str:
         """Build the compact debugger representation for this database path."""
+        if not (self.emojify or self.debug):
+            flags = []
+            if self.strict:
+                flags.append("strict=True")
+            if self.protected:
+                flags.append("protected=True")
+
+            flag_text = f", {', '.join(flags)}" if flags else ""
+            repr = f"Database({self._key!r}, len={self.len()}{flag_text})"
+            if srepr is None:
+                return repr
+            return f"{repr}/{srepr}"
+
         repr = ""
         if self.debug:
             repr += "🐞"
             
         if self._edb is None:            
-            repr += f"📀"
+            repr += "📀"
         else:
             repr += "💿"
         
@@ -1060,13 +1284,17 @@ class DatabaseLogicContainer():
         query = urlencode({"authSource": "admin", "authMechanism": "SCRAM-SHA-256"}) if credentials else ""
         return urlunsplit(("mongodb", f"{credentials}{host_part}", path, query, ""))
     
-    def to_dict(self) -> Iterator[tuple[str, Any]]:
+    def iter_items(self) -> Iterator[tuple[str, Any]]:
         """Yield serializable key/value pairs for every collection."""
         _self = self._
         keys = self.keys()
         for key in keys:
-            data = dict(_self[key]().to_dict())
+            data = _self[key]().to_dict()
             yield (key, data)            
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a serializable dictionary for every collection."""
+        return dict(self.iter_items())
             
     def to_json(self, *args: Any, **kwargs: Any) -> str:
         """Serialize the database to JSON, optionally base64-encoded."""
@@ -1075,7 +1303,7 @@ class DatabaseLogicContainer():
         else:
             to_base64 = False
             
-        _dict = dict(self.to_dict())
+        _dict = self.to_dict()
         _json = json.dumps(_dict, default=json_default_encoder, ensure_ascii=False)
         
         if to_base64:
@@ -1085,7 +1313,7 @@ class DatabaseLogicContainer():
 
     def to_yml(self) -> str:
         """Serialize the database to YAML."""
-        _dict = dict(self.to_dict())
+        _dict = self.to_dict()
         _yaml = yaml.dump(_dict, default_flow_style=False, allow_unicode=True)           
         return _yaml
     
@@ -1097,7 +1325,7 @@ class DatabaseLogicContainer():
             for key, value in defaults:
                 if isinstance(value, EndlessDocument):
                     _value = value()
-                    data = dict(_value.to_dict())
+                    data = _value.to_dict()
                     config[key] = data
         
 
@@ -1129,29 +1357,43 @@ class EndlessDocument():
         
         if _parent.debug:
             _self.debug = True
+
+        if getattr(_parent, "emojify", False):
+            _self.emojify = True
+
+        if getattr(_parent, "strict", False):
+            _self.strict = True
         
         ret = False        
-        if "debug" in kwargs and kwargs["debug"]:
+        if "debug" in kwargs:
             _self.debug = kwargs["debug"] == True
             ret = True
             
-        if "protected" in kwargs and kwargs["protected"]:
+        if "emojify" in kwargs:
+            _self.emojify = kwargs["emojify"] == True
+            ret = True
+
+        if "protected" in kwargs:
             _self.protected = kwargs["protected"] == True
             ret = True
         
-        if "static" in kwargs and kwargs["static"]:
+        if "static" in kwargs:
             _self.static = kwargs["static"] == True
             ret = True
+
+        if "strict" in kwargs:
+            _self.strict = kwargs["strict"] == True
+            ret = True
         
-        if "exception" in kwargs and kwargs["exception"]:
+        if "exception" in kwargs:
             _self.descendant_exception = kwargs["exception"] == True
             ret = True
                 
-        if "create" in kwargs and kwargs["create"]:
+        if "create" in kwargs:
             _self.descendant_create = kwargs["create"] == True            
             ret = True
 
-        if "rewrite" in kwargs and kwargs["rewrite"]:
+        if "rewrite" in kwargs:
             _self.descendant_rewrite = kwargs["rewrite"] == True
             ret = True
             
@@ -1159,7 +1401,7 @@ class EndlessDocument():
             if isinstance(descendant_expected, dict):
                 document = EndlessDocument(_self.key(), descendant_expected, _parent, True)
             else:
-                document = EndlessDocument(_self.key(), dict(_self.to_dict()), _parent, True)
+                document = EndlessDocument(_self.key(), _self.to_dict(), _parent, True)
 
             documentl = document()
             if not isinstance(descendant_expected, dict):
@@ -1252,7 +1494,7 @@ class EndlessDocument():
     def __setattr__(self, key: str, value: Any) -> None:
         """Persist a field assignment to MongoDB through the owning collection."""
         if key == "id" or key == "_id":
-            raise ReadOnlyError(f"Id is read-only")
+            raise ReadOnlyError("Id is read-only")
         
         valid_types = [EndlessDocument, str, int, float, bool, dict, list, bytes, bytearray, datetime, uuid.UUID, type(None)]
         if not type(value) in valid_types:
@@ -1300,6 +1542,9 @@ class EndlessDocument():
             return self.__dict__[key]
         elif _self.descendant_exception:
             raise PropertyNotFoundError(f"Property {key} not found in {self}")
+
+        if _self.strict:
+            raise PropertyNotFoundError(f"Property {key} not found in {self}")
         
         return _self.descendant(key, None, True)
     
@@ -1341,16 +1586,24 @@ class EndlessCollection():
         _self = self.__dict__[LOGIC_KEY]       
         
         ret = False
-        if "debug" in kwargs and kwargs["debug"]:
+        if "debug" in kwargs:
             _self.debug = kwargs["debug"] == True
             ret = True
             
-        if "protected" in kwargs and kwargs["protected"]:
+        if "emojify" in kwargs:
+            _self.emojify = kwargs["emojify"] == True
+            ret = True
+
+        if "protected" in kwargs:
             _self.protected = kwargs["protected"] == True
             ret = True
             
-        if "static" in kwargs and kwargs["static"]:
+        if "static" in kwargs:
             _self.static = kwargs["static"] == True
+            ret = True
+
+        if "strict" in kwargs:
+            _self.strict = kwargs["strict"] == True
             ret = True
             
         if ret:
@@ -1403,6 +1656,8 @@ class EndlessCollection():
                 return self.__dict__[key]
         
         if collection is None:
+            if _self.strict:
+                raise PropertyNotFoundError(f"Document {key} not found in {self}")
             return None
         else:
             _path = f"{_self.path(True)}/{key}"
@@ -1419,7 +1674,7 @@ class EndlessCollection():
                 if default_value is not None:
                     if isinstance(default_value, EndlessDocument):
                         _path = default_value().path()
-                        _data = dict(default_value().to_dict())
+                        _data = default_value().to_dict()
                         _self.set(_path, _data)
                         _obj = collection.find_one({"_id": key})
                     else:
@@ -1427,6 +1682,8 @@ class EndlessCollection():
                         return default_value              
             
             if _obj is None:
+                if _self.strict:
+                    raise PropertyNotFoundError(f"Document {key} not found in {self}")
                 document = _self.descendant(key, None, True)            
             else:    
                 document = _self.descendant(key, _obj)
@@ -1444,16 +1701,7 @@ class EndlessCollection():
         if collection is None:
             raise ReadOnlyError(f"{self} is read-only")
         
-        if isinstance(value, dict):
-            if not is_valid_value(value):
-                raise InvalidValueError(f"Value must be instance of valid EndlessDB value types")
-            collection.update_one({'_id': key }, {"$set": value}, upsert=True)            
-            _path = f"{_self.path(True)}/{key}"
-            documents = _self.edb()().documents()
-            if _path in documents:
-                documents[_path]().reload()                         
-        else:
-            raise InvalidValueError(f"You must pass dict value with filled _id property {self}")
+        _self.patch(key, value)
     
     def __getitem__(self, key: Any) -> Any:
         """Resolve a document or nested document path by item access."""
@@ -1498,21 +1746,29 @@ class EndlessCollection():
 class EndlessDatabase():
     """Dynamic root wrapper for a MongoDB database."""
     
-    def __init__(self, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None) -> None:
+    def __init__(self, url: str | None = None, host: str | None = None, port: int | None = None, user: str | None = None, password: str | None = None, database: str | None = None, strict: bool = False, emojify: bool = False) -> None:
         """Create a public database wrapper and attach its logic container."""
-        self.__dict__[LOGIC_KEY] = DatabaseLogicContainer(self, url, host, port, user, password, database)        
-       
+        self.__dict__[LOGIC_KEY] = DatabaseLogicContainer(self, url, host, port, user, password, database, strict, emojify)
+
     def __call__(self, *args: Any, **kwargs: Any) -> DatabaseLogicContainer | EndlessDatabase:
         """Return logic, or configure fluent database flags."""
         _self = self.__dict__[LOGIC_KEY]       
         
         ret = False
-        if "debug" in kwargs and kwargs["debug"]:
+        if "debug" in kwargs:
             _self.debug = kwargs["debug"] == True
             ret = True
+
+        if "emojify" in kwargs:
+            _self.emojify = kwargs["emojify"] == True
+            ret = True
         
-        if "protected" in kwargs and kwargs["protected"]:
+        if "protected" in kwargs:
             _self.protected = kwargs["protected"] == True
+            ret = True
+
+        if "strict" in kwargs:
+            _self.strict = kwargs["strict"] == True
             ret = True
         
         if ret:
@@ -1549,20 +1805,23 @@ class EndlessDatabase():
         
         key = normalize_document_key(key)
         if isinstance(key, int):
-            raise InvalidValueError(f"There is no numeric keys in edb")
+            raise InvalidValueError("There is no numeric keys in edb")
         
         path = key.split("/", 1)
         if len(path) > 1:
             next_path = path[0]
             next_path = normalize_document_key(next_path)
             if isinstance(key, int):
-                raise InvalidValueError(f"There is no numeric keys in edb")
+                raise InvalidValueError("There is no numeric keys in edb")
         
             return self[next_path][path[1]]
         
         collections = _self.collections()
         if not _self.debug and key in collections:
             return collections[key]     
+
+        if _self.strict and key not in _self.keys():
+            raise PropertyNotFoundError(f"Collection {key} not found in {self}")
            
         collection = EndlessCollection(key, self)        
         if not _self.debug:
@@ -1574,19 +1833,19 @@ class EndlessDatabase():
         """Route nested writes to collections; direct root writes are read-only."""
         key = normalize_document_key(key)
         if isinstance(key, int):
-            raise InvalidValueError(f"There is no numeric keys in edb")
+            raise InvalidValueError("There is no numeric keys in edb")
         
         path = key.split("/", 1)
         if len(path) > 1:
             next_path = path[0]
             next_path = normalize_document_key(next_path)
             if isinstance(key, int):
-                raise InvalidValueError(f"There is no numeric keys in edb")
+                raise InvalidValueError("There is no numeric keys in edb")
         
             self[next_path][path[1]] = value
             return
         
-        raise ReadOnlyError(f"This is edb root and it is read-only")
+        raise ReadOnlyError("This is edb root and it is read-only")
     
     def __setitem__(self, key: Any, value: Any) -> None:
         """Set a nested collection/document path by item access."""

@@ -1,6 +1,5 @@
 from common import make_database, reset_collection, sample_key
 
-
 edb = make_database()
 collection_name = sample_key("nested")
 settings = edb[collection_name]
@@ -13,7 +12,7 @@ try:
     service["ai.openai.api.timeout"] = 30
     service().reload()
 
-    data = dict(service().to_dict())
+    data = service().to_dict()
     api = data["ai"]["openai"]["api"]
 
     print("api base:", api["base"])

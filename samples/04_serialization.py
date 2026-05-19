@@ -1,11 +1,10 @@
-from datetime import datetime
 import base64
 import json
+from datetime import datetime
 
 import yaml
 
 from common import make_database, reset_collection, sample_key
-
 
 edb = make_database()
 collection_name = sample_key("serialization")

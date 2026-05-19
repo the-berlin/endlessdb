@@ -71,6 +71,9 @@ jobs:
           raise SystemExit(f"MongoDB did not become ready: {last_error}")
           PY
 
+      - name: Lint
+        run: python -m ruff check src tests samples
+
       - name: Run tests
         run: python -m pytest tests -q
 

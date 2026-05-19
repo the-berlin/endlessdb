@@ -1,6 +1,6 @@
-from pathlib import Path
 import sys
 import uuid
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -18,9 +18,9 @@ class SamplesConfiguration(EndlessConfiguration):
         self.MONGO_DATABASE = "endlessdb-samples"
 
 
-def make_database():
+def make_database(strict=False):
     SamplesConfiguration.apply()
-    return EndlessDatabase()
+    return EndlessDatabase(strict=strict)
 
 
 def sample_key(prefix):

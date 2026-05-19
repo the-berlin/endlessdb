@@ -2,14 +2,24 @@
 
 All notable changes to EndlessDB are documented in this file.
 
-## Unreleased
+## 0.5.0 - 2026-05-20
 
 ### Changed
+- Changed `to_dict()` on database, collection, and document logic containers to return concrete dictionaries; lazy key/value traversal is now exposed through `iter_items()`.
+- Switched default `repr()` output to plain professional representations while keeping emoji-rich debugger output behind `debug=True` or `emojify=True`.
+- Kept collection item assignment patch-compatible and documented explicit `patch()` versus `replace()` semantics.
 - Reworked the README for public project usage with PyPI installation, package imports, concise feature documentation, and no internal release or planning notes.
 - Added a public roadmap and internal implementation plan for developer-tool positioning, strict mode, dictionary iteration clarity, query expansion, field deletion, patch/replace semantics, Python compatibility, quality tooling, and optional emoji representations.
 - Lowered declared Python compatibility to Python 3.11+ and switched tests/samples toward public `endlessdb` imports while still testing the local source tree.
 
 ### Added
+- Added Ruff lint/import checks and pytest coverage reporting with a 70% baseline gate to the development and CI workflow.
+- Added runnable samples for strict mode, query helpers, and explicit update/delete semantics.
+- Added `strict=True` support for `EndlessDatabase` and wrapper logic calls so missing collections, documents, and fields raise typed `PropertyNotFoundError` instead of silently creating virtual descendants.
+- Added collection query helpers for sort, limit, skip, projection validation, `count()`, `exists()`, `first()`, and `raw()` PyMongo collection access.
+- Added explicit field deletion helpers through `unset()` and nested document `delete()` behavior that uses MongoDB `$unset` while keeping root document deletion explicit.
+- Added explicit `patch()` and `replace()` methods for root document writes.
+- Expanded integration coverage for strict mode, query helpers, `to_dict()`/`iter_items()`, unset/delete, patch/replace, and plain/emoji representations.
 - Added GitHub Actions CI for Python 3.11, 3.12, and 3.13 with MongoDB integration tests and package distribution checks.
 - Added a tag-driven GitHub Release workflow that builds, validates, and attaches wheel/source distributions to releases.
 - Added `scripts/create-github-release-tag.ps1` to create and push `v<version>` tags that trigger GitHub Releases.

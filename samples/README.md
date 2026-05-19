@@ -15,5 +15,8 @@ Available samples:
 - `04_serialization.py` shows JSON, base64 JSON, YAML, bytes, and datetime serialization.
 - `05_yaml_defaults.py` shows loading a read-only YAML collection with `CollectionLogicContainer.from_yml()`.
 - `06_debugger_view.py` prints the debugger-friendly `repr()` values for database, collection, document, and nested document wrappers.
+- `07_strict_mode.py` shows typo-safe strict mode with `PropertyNotFoundError` for missing documents and fields.
+- `08_query_helpers.py` shows `find()`, `count()`, `exists()`, `first()`, sorting, limiting, and raw PyMongo access.
+- `09_updates_and_deletes.py` shows patch-compatible assignment, explicit `patch()`, `replace()`, `unset()`, nested delete, and root document delete.
 
 Each Mongo-backed sample creates temporary collections with unique names and drops them before exiting.

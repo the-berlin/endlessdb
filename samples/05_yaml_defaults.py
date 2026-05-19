@@ -1,9 +1,5 @@
-from pathlib import Path
-
 from common import ROOT
-
 from endlessdb import CollectionLogicContainer
-
 
 config_path = ROOT / "samples" / "storage" / "config.yml"
 config = CollectionLogicContainer.from_yml(config_path)

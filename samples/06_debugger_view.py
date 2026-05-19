@@ -1,6 +1,5 @@
 from common import make_database, reset_collection, sample_key
 
-
 edb = make_database()
 collection_name = sample_key("debugger")
 collection = edb[collection_name]

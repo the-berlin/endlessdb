@@ -25,7 +25,7 @@ employees["john"] = {"Name": "John", "Age": 25}
 employees["john"].Age = 26
 
 print(employees["john"].Name)
-print(dict(employees["john"]().to_dict()))
+print(employees["john"]().to_dict())
 ```
 
 ## Features
@@ -34,9 +34,12 @@ print(dict(employees["john"]().to_dict()))
 - Attribute and item access for collections and document fields.
 - Dot-path writes for nested document values.
 - Lazy document wrappers for paths that do not exist until written.
+- Strict mode for typo-safe attribute access when you do not want virtual paths.
 - Mongo-backed updates for collection items and document properties.
+- Explicit patch, replace, unset, and delete operations.
+- Query helpers for filters, sorting, limits, offsets, counts, existence checks, and raw PyMongo access.
 - Document references stored as DBRef-compatible values.
-- JSON and YAML serialization helpers.
+- Dictionary, JSON, and YAML serialization helpers.
 - YAML-based default documents.
 - Access to the underlying PyMongo database and collection objects when needed.
 - Debugger-friendly string representations for VS Code and other Python debuggers.
@@ -144,6 +147,15 @@ db = EndlessDatabase(
 )
 ```
 
+Use strict mode when missing collections, documents, or fields should raise `PropertyNotFoundError` instead of creating virtual wrappers:
+
+```python
+db = EndlessDatabase(
+    url="mongodb://root:root@localhost:27017/app",
+    strict=True,
+)
+```
+
 ## References
 
 Assigning one `EndlessDocument` to another document field stores a reference-like value in MongoDB. When the document is loaded again, EndlessDB resolves it back to an `EndlessDocument` wrapper.
@@ -159,24 +171,55 @@ assert employees["john"].Department == departments["it"]
 
 ## Querying
 
-Use `find_one()` and `find()` from the collection logic container for simple Mongo-style filters:
+Use `find_one()` and `find()` from the collection logic container for Mongo-style filters:
 
 ```python
 employees["john"] = {"Name": "John", "Age": 26}
 employees["jane"] = {"Name": "Jane", "Age": 31}
 
 match = employees().find_one({"Name": "Jane"})
-matches = list(employees().find({"Age": 31}))
+matches = list(
+    employees().find(
+        {"Age": {"$gte": 25}},
+        sort=[("Age", -1)],
+        limit=10,
+    )
+)
 ```
 
-`find()` returns an iterator of `EndlessDocument` objects.
+`find()` returns an iterator of `EndlessDocument` objects. The collection logic also exposes `count()`, `exists()`, `first()`, and `raw()` for direct PyMongo collection access.
+
+## Updating And Deleting
+
+Item assignment keeps patch-compatible `$set` behavior:
+
+```python
+employees["john"] = {"Name": "John", "Age": 25}
+employees["john"] = {"Age": 26}
+```
+
+Use explicit methods when the difference matters:
+
+```python
+employees().patch("john", {"Role": "developer"})
+employees().replace("john", {"Name": "John", "Status": "active"})
+employees["john"]().unset("Profile.City")
+employees["john"].Profile().delete()
+```
+
+Root document deletion remains explicit:
+
+```python
+employees["john"]().delete()
+```
 
 ## Serialization
 
-The current `0.4.x` API exposes serializable key/value pairs through `to_dict()`. Wrap it with `dict()` when you need a concrete dictionary. The roadmap includes making `to_dict()` return a dictionary directly.
+Logic containers can export data to dictionaries, JSON, or YAML. Use `iter_items()` when you need lazy key/value traversal.
 
 ```python
-data = dict(employees["john"]().to_dict())
+data = employees["john"]().to_dict()
+items = list(employees["john"]().iter_items())
 json_text = employees["john"]().to_json()
 yaml_text = employees().to_yml()
 ```
@@ -205,7 +248,10 @@ The [samples](samples) directory contains runnable examples for the main workflo
 - document references;
 - JSON, base64 JSON, and YAML serialization;
 - YAML defaults loading;
-- debugger-friendly representations.
+- debugger-friendly representations;
+- strict mode;
+- query helpers;
+- patch, replace, unset, and delete behavior.
 
 Run a sample from the repository root:
 
@@ -217,17 +263,11 @@ python samples\01_quickstart.py
 
 ## Roadmap
 
-The next development stage focuses on making the dynamic API safer and clearer while keeping EndlessDB small:
+The next development stage continues to harden EndlessDB as a small developer tool:
 
-- strict mode for typo-safe attribute access;
-- `to_dict()` returning real dictionaries, with a separate iterator API for lazy key/value traversal;
-- public imports in tests and samples while still testing the local source tree;
-- richer query helpers for sorting, limiting, projections, counts, existence checks, and raw PyMongo access;
-- explicit field deletion and unset operations;
-- separate patch and replace semantics for document writes;
-- Python 3.11+ compatibility after test and CI validation;
-- Ruff, formatting, type checking, coverage, and GitHub Actions CI;
-- plain default representations with optional emoji/debug-friendly output.
+- formatter and type checking once the dynamic public API has settled further;
+- higher coverage for negative paths and pure helpers;
+- continued typing work without hiding the dynamic API.
 
 ## Development
 
@@ -250,6 +290,14 @@ Run the test suite:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests
 ```
+
+Run lint checks:
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff check src tests samples
+```
+
+Pytest writes a terminal coverage summary and `coverage.xml` through `pytest-cov`; the current baseline gate is 70%.
 
 Build the package locally:
 

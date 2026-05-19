@@ -23,7 +23,6 @@ from endlessdb import (
     mongodb_database_from_url,
 )
 
-
 TEST_COVERAGE_SUMMARY = [
     "EndlessConfiguration.apply and inherited overrides",
     "EndlessDatabase logic access, URL masking, and debug fluent return",
@@ -32,16 +31,21 @@ TEST_COVERAGE_SUMMARY = [
     "Virtual descendants with create=True and rewrite=True",
     "Document references and ref_to_id serialization",
     "CollectionLogicContainer.find and find_one",
+    "Expanded query helpers with sort, limit, skip, count, exists, first, and raw access",
     "Per-instance EndlessDatabase connection overrides and URL helpers",
+    "Strict mode for missing collections, documents, and document properties",
     "Typed EndlessDB exception classes",
     "Typed descendant strict mode",
     "Removed unused public w helper",
+    "Dictionary-returning to_dict and generator-style iter_items",
     "JSON, YAML, base64, bytes, date, and datetime serialization",
     "Read-only YAML collections loaded through from_yml",
     "Missing and non-dict YAML negative paths",
     "List and nested list values in Mongo writes",
+    "Explicit field unset and nested document delete",
+    "Patch and replace document write semantics",
     "Protected mode, invalid value validation, root read-only behavior, and comparison errors",
-    "Debugger-friendly __repr__ and __str__ output",
+    "Plain default repr with optional emoji/debug-friendly output",
 ]
 
 
@@ -272,27 +276,76 @@ def test_document_references(collection, edb):
         employee().reload()
 
         assert employee.Department == department
-        assert dict(employee().to_dict(ref_to_id=True))["Department"] == department_id
+        assert employee().to_dict(ref_to_id=True)["Department"] == department_id
     finally:
         edb().mongo().drop_collection(department_collection_name)
         edb().collections().pop(department_collection_name, None)
 
 
-def test_find_and_find_one(collection):
-    # Checks find and find_one wrappers around PyMongo collection queries.
+def test_find_and_query_helpers(collection):
+    # Checks find/find_one plus sort, limit, skip, count, exists, first, and raw collection access.
     marker = uuid.uuid4().hex
     first_id = f"doc_{uuid.uuid4().hex}"
     second_id = f"doc_{uuid.uuid4().hex}"
+    third_id = f"doc_{uuid.uuid4().hex}"
 
     collection[first_id] = {"marker": marker, "order": 1}
     collection[second_id] = {"marker": marker, "order": 2}
+    collection[third_id] = {"marker": marker, "order": 3}
 
     found = [document.id for document in collection().find({"marker": marker})]
-    assert set(found) == {first_id, second_id}
+    assert set(found) == {first_id, second_id, third_id}
+
+    sorted_limited = [
+        document.id
+        for document in collection().find(
+            {"marker": marker},
+            sort=[("order", pymongo.DESCENDING)],
+            skip=1,
+            limit=1,
+        )
+    ]
+    assert sorted_limited == [second_id]
 
     assert collection().find_one({"order": 1}).id == first_id
+    assert collection().first({"marker": marker}, sort=[("order", pymongo.DESCENDING)]).id == third_id
+    assert collection().count({"marker": marker}) == 3
+    assert collection().exists({"order": 2}) is True
+    assert collection().exists({"order": 99}) is False
+    assert isinstance(collection().raw(), pymongo.collection.Collection)
     assert list(collection().find({"marker": "missing"})) == []
     assert collection().find_one({"marker": "missing"}) is None
+
+    with pytest.raises(InvalidValueError, match="Projection must include _id"):
+        list(collection().find({"marker": marker}, projection={"_id": 0, "marker": 1}))
+
+
+def test_strict_mode_missing_paths(endlessdb_configuration, mongo_available):
+    # Checks strict mode for missing collections, documents, and properties.
+    database_name = f"tests-endlessdb-strict-{uuid.uuid4().hex}"
+    collection_name = f"strict_{uuid.uuid4().hex}"
+    edb = EndlessDatabase(
+        url=f"mongodb://root:root@localhost:27017/{database_name}?authSource=admin&authMechanism=SCRAM-SHA-256",
+        strict=True,
+    )
+    try:
+        with pytest.raises(PropertyNotFoundError, match="Collection missing_collection not found"):
+            edb.missing_collection
+
+        edb().mongo().create_collection(collection_name)
+        collection = edb[collection_name]
+
+        with pytest.raises(PropertyNotFoundError, match="Document missing_document not found"):
+            collection["missing_document"]
+
+        collection["john"] = {"name": "John"}
+        document = collection["john"]
+        assert document.name == "John"
+
+        with pytest.raises(PropertyNotFoundError, match="Property typo not found"):
+            document.typo
+    finally:
+        edb().mongo().client.drop_database(database_name)
 
 
 def test_typed_descendant_strict_mode(collection):
@@ -333,9 +386,15 @@ def test_serialization_json_yaml_and_base64(collection):
     }
     document = collection[doc_id]
 
-    data = dict(document().to_dict())
+    data = document().to_dict()
+    assert isinstance(data, dict)
     assert data["id"] == doc_id
     assert data["nested"] == {"value": 5}
+    assert list(document().iter_items()) == list(data.items())
+
+    collection_data = collection().to_dict()
+    assert isinstance(collection_data, dict)
+    assert collection_data[doc_id]["name"] == "binary"
 
     json_data = json.loads(document().to_json())
     assert json_data["payload"] == base64.b64encode(b"hello").decode("utf-8")
@@ -372,7 +431,59 @@ def test_yml_collection_is_read_only_and_reloadable(tmp_path):
     collection().reload()
 
     assert collection.service.debug is False
-    assert "endpoint" not in dict(collection.service().to_dict())
+    assert "endpoint" not in collection.service().to_dict()
+
+
+def test_unset_and_nested_delete(collection):
+    # Checks explicit field unset and nested document deletion without dropping the root document.
+    doc_id = f"doc_{uuid.uuid4().hex}"
+    collection[doc_id] = {
+        "profile": {"city": "New York", "zip": 10001},
+        "settings": {"theme": "dark"},
+        "keep": True,
+    }
+    document = collection[doc_id]
+
+    document().unset("profile.city")
+    document().reload()
+    assert document.profile.zip == 10001
+    assert "city" not in document.profile().to_dict()
+
+    collection().unset(f"{doc_id}.keep")
+    document().reload()
+    assert "keep" not in document().to_dict()
+
+    document.settings().delete()
+    document().reload()
+    assert "settings" not in document().to_dict()
+    assert document != None
+
+
+def test_patch_and_replace_semantics(collection):
+    # Checks explicit patch and replace behavior for root documents.
+    doc_id = f"doc_{uuid.uuid4().hex}"
+
+    collection().patch(doc_id, {"name": "John", "age": 25})
+    document = collection[doc_id]
+    assert document.name == "John"
+    assert document.age == 25
+
+    collection().patch(doc_id, {"age": 26})
+    document().reload()
+    assert document.name == "John"
+    assert document.age == 26
+
+    collection[doc_id] = {"role": "developer"}
+    document().reload()
+    assert document.name == "John"
+    assert document.role == "developer"
+
+    collection().replace(doc_id, {"status": "active"})
+    document().reload()
+    data = document().to_dict()
+    assert data["status"] == "active"
+    assert "name" not in data
+    assert "role" not in data
 
 
 def test_yml_collection_negative_paths(tmp_path):
@@ -418,6 +529,12 @@ def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
     with pytest.raises(ReadOnlyError, match="protected and read-only"):
         document.name = "changed"
 
+    with pytest.raises(ReadOnlyError, match="protected and read-only"):
+        document().unset("name")
+
+    with pytest.raises(ReadOnlyError, match="protected and read-only"):
+        document().delete()
+
     with pytest.raises(InvalidValueError, match="Value must be instance"):
         collection[f"bad_{uuid.uuid4().hex}"] = {"value": object()}
 
@@ -432,10 +549,15 @@ def test_protected_mode_invalid_values_and_readonly_root(collection, edb):
 
 
 def test_debugger_friendly_representations(collection):
-    # Checks debugger-friendly __repr__ and __str__ markers for dynamic wrappers.
+    # Checks plain default repr and optional emoji/debug markers for dynamic wrappers.
     doc_id = f"doc_{uuid.uuid4().hex}"
     collection[doc_id] = {"name": "debug"}
     document = collection[doc_id]
+
+    assert "Database(" in repr(collection)
+    assert "Collection(" in repr(collection)
+    assert "Document(" in repr(document)
+    assert "🐞" not in repr(document)
 
     collection(debug=True)
     document(debug=True)
@@ -445,3 +567,6 @@ def test_debugger_friendly_representations(collection):
     assert doc_id in repr(document)
     assert doc_id in str(document)
     assert "🐞" in repr(document)
+
+    document(debug=False, emojify=True)
+    assert "📑" in repr(document)
