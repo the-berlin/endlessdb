@@ -3,7 +3,6 @@ import re
 import uuid
 import bson
 import yaml
-import uuid
 import json
 import base64
 import pymongo
@@ -15,8 +14,7 @@ import pymongo.database
 from abc import abstractmethod
 from typing import Any
 from pathlib import (
-    Path,
-    PosixPath
+    Path
 )
 from datetime import (
     date,
@@ -110,8 +108,7 @@ class EndlessConfiguration():
             self.MONGO_USER = os.environ.get("CORE_MONGO_USER", "root")
             self.MONGO_PASSWORD = os.environ.get("CORE_MONGO_PASSWORD", "root")
             self.MONGO_DATABASE = os.environ.get("CORE_MONGO_DATABASE", "endlessdb")
-            self.MONGO_URI = "mongodb://localhost:27017/"
-            self.MONGO_DATABASE = "endlessdb"
+            self.MONGO_URI = os.environ.get("CORE_MONGO_URI", "mongodb://localhost:27017/")
             
             self.CONFIG_COLLECTION = "config"
             self.CONFIG_YML: str = "~/config.yml"            
@@ -193,6 +190,19 @@ def is_magic_method(method):
         return False
     
     return method.startswith("__") and method.endswith("__")
+
+def is_valid_value(value):
+    valid_types = [EndlessDocument, str, int, float, bool, bytes, bytearray, datetime, uuid.UUID, type(None)]
+    if type(value) in valid_types:
+        return True
+
+    if isinstance(value, dict):
+        return all(is_valid_value(item) for item in value.values())
+
+    if isinstance(value, list):
+        return all(is_valid_value(item) for item in value)
+
+    return False
 
 ### Class for wrapping logic container (TO DO) 
 
@@ -372,10 +382,13 @@ class DocumentLogicContainer():
             documents = self.edb()().documents()
             _path = f"{self.path(True)}/{key}"
             if _path in documents:
-                property = documents[_path]
+                document = documents[_path]
+                if reload or obj is not None:
+                    document()._reload(obj)
             else:
-                property = EndlessDocument(key, obj, self, virtual)
-                documents[_path] = property
+                document = EndlessDocument(key, obj, self, virtual)
+                documents[_path] = document
+            return document
         
         return EndlessDocument(key, obj, self, virtual)
 
@@ -517,10 +530,12 @@ class CollectionLogicContainer():
         self.static = False
         self.debug = False
         
-        if isinstance(key, PosixPath):
-            _key = key.stem
+        if isinstance(key, Path):
+            _key = key.name
+            self._source_path = key
         else:
             _key = key
+            self._source_path = Path(key) if edb is None else None
             
         self._ = _
         self.__ = _.__dict__
@@ -540,7 +555,7 @@ class CollectionLogicContainer():
             
         if self._collection is None:
             if yml is None:            
-                raise Exception(f"Yoi must provide either yml or edb object for {self}")
+                raise Exception(f"You must provide either yml or edb object for {self}")
             else:
                 self._reload(yml)
         
@@ -557,6 +572,14 @@ class CollectionLogicContainer():
     #region 📌Methods
     
     def _reload(self, yml):
+        if not isinstance(yml, dict):
+            raise Exception(f"YAML collection data for {self} must be a dict")
+
+        for _key in list(self._keys):
+            if _key not in yml and _key in self.__:
+                del self.__[_key]
+
+        self._keys.clear()
         for _key in yml:
             value = yml[_key]
             self._keys.append(_key)  
@@ -574,11 +597,12 @@ class CollectionLogicContainer():
             documents = self._edb().documents()
             if _path in documents:
                 document = documents[_path]
-                document().reload()            
+                document()._reload(value)            
             else:
                 document = EndlessDocument(key, value, self, virtual)
                 if not self.debug:
                     documents[_path] = document
+            return document
         
         return EndlessDocument(key, value, self, virtual)
 
@@ -683,11 +707,12 @@ class CollectionLogicContainer():
                 documents[_path]().reload()
     
     def find(self, filter):
-        r = self.mongo().find(filter, {"_id": 1})
-        if r is not None and len(r) > 0:
-            for document in r:
-                yield self.descendant(document["_id"], None)
-        else:
+        found = False
+        for document in self.mongo().find(filter, {"_id": 1}):
+            found = True
+            yield self.descendant(document["_id"], None)
+
+        if not found:
             yield None
         
     def find_one(self, filter):
@@ -699,14 +724,14 @@ class CollectionLogicContainer():
         
     def reload(self):
         if self._edb is None:
-           with open(self._key, 'r') as stream:
-            try:         
-                yml = yaml.safe_load(stream)
-            except yaml.YAMLError as exc:
-                print(f'YAML parsing error:\n{exc}')
-                raise exc
+            with open(self._source_path, 'r') as stream:
+                try:         
+                    yml = yaml.safe_load(stream)
+                except yaml.YAMLError as exc:
+                    print(f'YAML parsing error:\n{exc}')
+                    raise exc
         else:
-            raise Exception(f"{self} can reload only yml collction")
+            raise Exception(f"{self} can reload only yml collection")
         
         self._reload(yml)
             
@@ -757,18 +782,14 @@ class CollectionLogicContainer():
         return _yaml
     
     def from_yml(path): 
+        path = Path(path).expanduser()
         with open(path, 'r') as stream:
             try:         
                 yml = yaml.safe_load(stream)
             except yaml.YAMLError as exc:
                 print(f'YAML parsing error:\n{exc}')
                 raise exc
-        if not isinstance(path, PosixPath):
-            if os.name == 'nt':
-                path = Path(path)
-            else:
-                path = PosixPath(path)
-        return EndlessCollection(path.name, None, yml)
+        return EndlessCollection(path, None, yml)
 
     #endregion 📌Methods
     
@@ -943,15 +964,29 @@ class EndlessDocument():
         if "create" in kwargs and kwargs["create"]:
             _self.descendant_create = kwargs["create"] == True            
             ret = True
+
+        if "rewrite" in kwargs and kwargs["rewrite"]:
+            _self.descendant_rewrite = kwargs["rewrite"] == True
+            ret = True
             
         if descendant_expected is not None:
-            document = EndlessDocument(_self.key(), dict(_self.to_dict()), _parent, True)
+            if isinstance(descendant_expected, dict):
+                document = EndlessDocument(_self.key(), descendant_expected, _parent, True)
+            else:
+                document = EndlessDocument(_self.key(), dict(_self.to_dict()), _parent, True)
+
             documentl = document()
-            documentl.descendant_expected = descendant_expected
-            documentl.descendant_create = _self.descendant_expected
+            if not isinstance(descendant_expected, dict):
+                documentl.descendant_expected = descendant_expected
+            documentl.descendant_create = _self.descendant_create
+            documentl.descendant_rewrite = _self.descendant_rewrite
             documentl.descendant_exception = _self.descendant_exception
             if _parent.debug:
                 documentl.debug = True
+
+            if _self.descendant_create or _self.descendant_rewrite:
+                _self.collection()().set(_self.path(), descendant_expected)
+                documentl._reload(descendant_expected)
             
             return document
         
@@ -988,7 +1023,7 @@ class EndlessDocument():
         if isinstance(other, EndlessDocument):
             return _self.path(True) == other().path(True)
         
-        raise Exception("This type of comparsion is not supported yet")
+        raise Exception("This type of comparison is not supported yet")
     
     def __iter__(self):
         _self = self.__dict__["***"]
@@ -1034,8 +1069,13 @@ class EndlessDocument():
             value = descendant_expected
             
         if value is not None:
+            if _self.descendant_create and _self.virtual:
+                _self.collection()().set(_self.path(), value, descendant_expected)
+                _self._reload(value)
+
             if _self.descendant_rewrite:
-                _self.collection().set(_self.path(), value, descendant_expected)
+                _self.collection()().set(_self.path(), value, descendant_expected)
+                _self._reload(value)
                 return value
             
         if key in self.__dict__:
@@ -1106,6 +1146,8 @@ class EndlessCollection():
         _self = self.__dict__["***"]
         if other is None:
             return _self.virtual
+        if isinstance(other, EndlessCollection):
+            return _self.path(True) == other().path(True)
         
     def __delete__(self, instance):
         pass
@@ -1134,7 +1176,7 @@ class EndlessCollection():
         _self = self.__dict__["***"]
         collection = _self.mongo()
         if key in self.__dict__:
-            if collection is None or key not in _self.keys:
+            if collection is None or key not in _self.keys():
                 return self.__dict__[key]
         
         if collection == None:
@@ -1182,13 +1224,15 @@ class EndlessCollection():
             raise Exception(f"{self} is read-only")
         
         if isinstance(value, dict):
+            if not is_valid_value(value):
+                raise Exception(f"Value must be instance of valid EndlessDB value types")
             collection.update_one({'_id': key }, {"$set": value}, upsert=True)            
             _path = f"{_self.path(True)}/{key}"
             documents = _self.edb()().documents()
             if _path in documents:
                 documents[_path]().reload()                         
         else:
-            raise Exception(f"You must pass dict value with filled _id pproperty {self}")
+            raise Exception(f"You must pass dict value with filled _id property {self}")
     
     def __getitem__(self, key):
         if key is None:
@@ -1258,7 +1302,7 @@ class EndlessDatabase():
             ret = True
         
         if ret:
-            self
+            return self
         else:
             return _self
     
