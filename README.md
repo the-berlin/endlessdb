@@ -1,95 +1,84 @@
 # EndlessDB
 
-EndlessDB is a small Python wrapper around MongoDB that lets an application work with databases, collections, and documents as dynamic Python objects.
+EndlessDB is a lightweight Python wrapper around MongoDB that lets you work with databases, collections, and documents as dynamic Python objects.
 
-The goal is to keep the natural MongoDB shape while making day-to-day access feel direct:
+It keeps MongoDB as the source of truth while making common document access feel natural:
 
 ```python
-from src.endlessdb import EndlessConfiguration, EndlessDatabase
+from endlessdb import EndlessConfiguration, EndlessDatabase
 
 
 class LocalConfiguration(EndlessConfiguration):
-	def override(self):
-		self.CONFIG_YML = "tests/config.yml"
-		self.MONGO_URI = "mongodb://root:root@localhost:27017/"
-		self.MONGO_DATABASE = "tests-endlessdb"
+    def override(self):
+        self.MONGO_URI = "mongodb://root:root@localhost:27017/"
+        self.MONGO_DATABASE = "example"
 
 
 LocalConfiguration.apply()
 
-edb = EndlessDatabase()
-employees = edb.Employee
+db = EndlessDatabase()
+employees = db.Employee
+
 employees["john"] = {"Name": "John", "Age": 25}
+employees["john"].Age = 26
 
-john = employees["john"]
-john.Age = 26
-
-print(john.Name)
-print(john().to_dict())
+print(employees["john"].Name)
+print(employees["john"]().to_dict())
 ```
 
-## What It Provides
+## Features
 
-- Dynamic database, collection, and document wrappers: `EndlessDatabase`, `EndlessCollection`, and `EndlessDocument`.
-- Attribute and index access for collections and nested document properties.
-- Mongo-backed writes for collection items and document fields.
-- Lazy/virtual documents for paths that do not exist yet.
-- Document references stored as MongoDB DBRef-compatible data.
-- JSON and YAML export helpers.
-- YAML-based defaults and configuration override hooks.
-- Direct access to the underlying PyMongo database and collection objects when the wrapper should not hide MongoDB.
+- Dynamic wrappers for MongoDB databases, collections, and documents.
+- Attribute and item access for collections and document fields.
+- Dot-path writes for nested document values.
+- Lazy document wrappers for paths that do not exist until written.
+- Mongo-backed updates for collection items and document properties.
+- Document references stored as DBRef-compatible values.
+- JSON and YAML serialization helpers.
+- YAML-based default documents.
+- Access to the underlying PyMongo database and collection objects when needed.
+- Debugger-friendly string representations for VS Code and other Python debuggers.
 
-## Object Model
+## Installation
 
-EndlessDB has two layers for each public object:
+EndlessDB requires Python 3.13 or newer and a reachable MongoDB server.
 
-- The public wrapper (`EndlessDatabase`, `EndlessCollection`, `EndlessDocument`) is what application code touches.
-- The logic container returned by calling the wrapper (`edb()`, `collection()`, `document()`) exposes metadata and lower-level operations.
+Install the package from PyPI:
 
-Common examples:
-
-```python
-edb = EndlessDatabase()
-
-collection = edb.Employee
-collection_logic = collection()
-
-document = collection["john"]
-document_logic = document()
-
-print(collection_logic.key())
-print(document_logic.path(True))
-print(document_logic.mongo())
+```powershell
+python -m pip install endlessdb
 ```
 
-This split keeps everyday code compact while still making the internal path, parent, Mongo object, serialization, and reload/delete operations available when needed.
+For local examples, you can start MongoDB with Docker Compose from this repository:
 
-## Configuration
+```powershell
+docker compose -f samples/docker-compose.yml up -d
+```
 
-Configuration is controlled through `EndlessConfiguration`. A project can override the default MongoDB connection, database name, config collection, and YAML defaults file by subclassing `EndlessConfiguration` and calling `apply()` before creating `EndlessDatabase`.
+## Quick Start
+
+Configure the MongoDB connection before creating `EndlessDatabase`:
 
 ```python
+from endlessdb import EndlessConfiguration, EndlessDatabase
+
+
 class AppConfiguration(EndlessConfiguration):
-	def override(self):
-		self.CONFIG_YML = "config.yml"
-		self.CONFIG_COLLECTION = "config"
-		self.MONGO_URI = "mongodb://root:root@localhost:27017/"
-		self.MONGO_DATABASE = "app"
+    def override(self):
+        self.MONGO_URI = "mongodb://root:root@localhost:27017/"
+        self.MONGO_DATABASE = "app"
 
 
 AppConfiguration.apply()
-edb = EndlessDatabase()
+
+db = EndlessDatabase()
 ```
 
-The test suite uses this mechanism to point EndlessDB at the integration database in `tests/docker-compose.yml`.
-
-## Reading And Writing
-
-Collections can be reached through attribute or item access:
+Collections are available through attributes or item access:
 
 ```python
-employees = edb.Employee
-same_collection = edb["Employee"]
+employees = db.Employee
+same_collection = db["Employee"]
 ```
 
 Documents are addressed by MongoDB `_id`:
@@ -99,7 +88,7 @@ employees["john"] = {"Name": "John", "Age": 25}
 john = employees["john"]
 ```
 
-Document fields can be read and written as Python attributes or nested item paths:
+Fields can be read and written through attributes or item paths:
 
 ```python
 john.Age = 26
@@ -109,74 +98,124 @@ assert john.Age == 26
 assert john.Profile.City == "New York"
 ```
 
-When a document is already loaded, external MongoDB changes are visible after reloading the document logic:
+## Object Model
+
+EndlessDB exposes public wrappers for everyday use:
+
+- `EndlessDatabase` represents a MongoDB database.
+- `EndlessCollection` represents a MongoDB collection.
+- `EndlessDocument` represents a MongoDB document or nested document path.
+
+Calling a wrapper returns its logic container. Logic containers expose metadata, lower-level Mongo objects, serialization, reload, and delete operations:
 
 ```python
-john().reload()
+db = EndlessDatabase()
+collection = db.Employee
+document = collection["john"]
+
+print(collection().key())
+print(document().path(True))
+print(document().mongo())
+```
+
+This split keeps application code compact while still making lower-level operations available when you need them.
+
+## Configuration
+
+`EndlessConfiguration` controls the default MongoDB connection, database name, config collection, and YAML defaults file.
+
+```python
+class AppConfiguration(EndlessConfiguration):
+    def override(self):
+        self.CONFIG_YML = "config.yml"
+        self.CONFIG_COLLECTION = "config"
+        self.MONGO_URI = "mongodb://root:root@localhost:27017/"
+        self.MONGO_DATABASE = "app"
+```
+
+You can also pass connection values directly when creating a database:
+
+```python
+db = EndlessDatabase(
+    url="mongodb://root:root@localhost:27017/",
+    database="app",
+)
 ```
 
 ## References
 
-Assigning an `EndlessDocument` to another document stores a reference-like value in MongoDB and resolves it back to an `EndlessDocument` on reload.
+Assigning one `EndlessDocument` to another document field stores a reference-like value in MongoDB. When the document is loaded again, EndlessDB resolves it back to an `EndlessDocument` wrapper.
 
 ```python
-departments = edb.Department
+departments = db.Department
 departments["it"] = {"Name": "IT"}
 
-john.Department = departments["it"]
-assert john.Department == departments["it"]
+employees["john"].Department = departments["it"]
+
+assert employees["john"].Department == departments["it"]
 ```
+
+## Querying
+
+Use `find_one()` and `find()` from the collection logic container for simple Mongo-style filters:
+
+```python
+employees["john"] = {"Name": "John", "Age": 26}
+employees["jane"] = {"Name": "Jane", "Age": 31}
+
+match = employees().find_one({"Name": "Jane"})
+matches = list(employees().find({"Age": 31}))
+```
+
+`find()` returns an iterator of `EndlessDocument` objects.
 
 ## Serialization
 
-Each logic container can export to dictionaries, JSON, or YAML.
+Logic containers can export data to dictionaries, JSON, or YAML:
 
 ```python
-data = john().to_dict()
-json_text = john().to_json()
+data = employees["john"]().to_dict()
+json_text = employees["john"]().to_json()
 yaml_text = employees().to_yml()
 ```
 
-Bytes are base64 encoded for JSON, and `date`/`datetime` values are encoded with ISO format.
+Bytes are base64 encoded for JSON. `date` and `datetime` values are encoded in ISO format.
 
-## Debugger Visualization
+## YAML Defaults
 
-EndlessDB is intentionally friendly in the VS Code debugger. Public wrappers and logic containers implement `__str__` and `__repr__` so the debugger watch window shows useful state instead of anonymous Python objects.
+EndlessDB can load default collections and documents from YAML. This is useful for sample data, local application defaults, and repeatable test fixtures.
 
-The visual representation is compact but information dense:
+```yaml
+Employee:
+  john:
+    Name: John
+    Age: 25
+```
 
-- Database, collection, and document objects each show their kind.
-- Paths are composed from database, collection, document id, and nested property names.
-- Length counters show how many collections, documents, or fields are visible at that point.
-- Virtual documents are marked so it is clear when a path exists only in Python until it is written.
-- Protected/read-only and open/writeable states are shown directly in the representation.
-- Debug mode adds an extra marker, making debug-enabled objects easy to spot while stepping through code.
-
-That means expressions such as `edb`, `edb.Employee`, `edb.Employee["john"]`, and `edb.Employee["john"].Profile` reveal their identity, path, size, and state directly in the debugger without extra logging.
+Set `CONFIG_YML` in your configuration class, then create `EndlessDatabase()` as usual.
 
 ## Samples
 
-The `samples` folder contains runnable examples for the main EndlessDB workflows:
+The [samples](samples) directory contains runnable examples for the main workflows:
 
-- quickstart collection/document writes;
+- quickstart collection and document writes;
 - nested dot-path updates;
 - document references;
 - JSON, base64 JSON, and YAML serialization;
 - YAML defaults loading;
 - debugger-friendly representations.
 
-Start MongoDB and run any sample from the repository root:
+Run a sample from the repository root:
 
 ```powershell
 docker compose -f samples/docker-compose.yml up -d
-.\.venv\Scripts\python.exe samples\01_quickstart.py
+python -m pip install -e .
+python samples\01_quickstart.py
 ```
 
-## Development Setup
+## Development
 
-EndlessDB currently targets Python 3.13+.
-
-Create or refresh the local virtual environment from the repository root:
+Create a local virtual environment and install development dependencies:
 
 ```powershell
 python -m venv .venv
@@ -190,20 +229,18 @@ Start the integration MongoDB instance:
 docker compose -f tests/docker-compose.yml up -d
 ```
 
-Run the tests:
+Run the test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests
 ```
 
-The test suite contains focused pytest tests for configuration overrides, Mongo-backed writes, nested paths, document references, YAML collections, serialization, protected mode, and debugger-friendly representations. See `.github/project-plan.md` for the active backlog.
-
-To prepare a release interactively, use the release assistant. It asks before each stage, can increment `pyproject.toml` by major/minor/patch/dev/rc/custom version, checks that the selected version is not already published, builds the package, validates it with Twine, and then asks whether to upload to TestPyPI, public PyPI, both, or neither:
+Build the package locally:
 
 ```powershell
-.\scripts\release.ps1
+.\.venv\Scripts\python.exe -m build
 ```
 
-## Release Notes
+## License
 
-Publishing is intentionally manual. Before uploading to TestPyPI or PyPI, the version in `pyproject.toml` must change and must not already exist on the target package index. Build and validate the distribution locally, publish to TestPyPI first, verify installation, and only then publish the same built artifacts to public PyPI.
+EndlessDB is licensed under the Apache License 2.0. See [LICENSE.txt](LICENSE.txt) for details.

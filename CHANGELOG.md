@@ -4,6 +4,9 @@ All notable changes to EndlessDB are documented in this file.
 
 ## Unreleased
 
+### Changed
+- Reworked the README for public project usage with PyPI installation, package imports, concise feature documentation, and no internal release or planning notes.
+
 ## 0.4.16 - 2026-05-20
 
 ### Changed
